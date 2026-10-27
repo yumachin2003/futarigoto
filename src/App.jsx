@@ -160,7 +160,13 @@ export default function App() {
   const displayed = showSettled ? expenses : unsettled;
 
   return (
-    <Container size="xs" py="md" pb={80}>
+    <Container
+      size="xs"
+      style={{
+        paddingTop: "max(32px, calc(env(safe-area-inset-top, 0px) + 20px))",
+        paddingBottom: "max(80px, calc(env(safe-area-inset-bottom, 0px) + 80px))",
+      }}
+    >
       <Group justify="space-between" mb="md">
         <Group gap="xs">
           <IconReceipt2 size={24} color="#228be6" />
