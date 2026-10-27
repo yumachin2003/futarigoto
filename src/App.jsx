@@ -176,6 +176,9 @@ export default function App() {
                 key={i}
                 style={{
                   display: "inline-block",
+                  // Safariはアニメーション中、はみ出た字形を箱で切るので余白で広げてマージンで相殺
+                  padding: "0.25em 0.5em",
+                  margin: "-0.25em -0.5em",
                   animation: "floatInChar 0.55s cubic-bezier(0.16, 1, 0.3, 1) both",
                   animationDelay: `${0.1 + i * 0.05}s`,
                 }}
