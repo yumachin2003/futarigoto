@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  Container, Paper, Title, Text, Box, Button, Group, Stack,
+  Container, Paper, Title, Text, Button, Group, Stack,
   SegmentedControl, TextInput, ActionIcon, Badge, Checkbox,
   Divider, Card, Center, Loader
 } from "@mantine/core";
@@ -18,13 +18,28 @@ import { db, auth, googleProvider } from "./FirebaseConfig";
 
 const newRow = () => ({ id: crypto.randomUUID(), amount: "", taxType: "tax8" });
 
+const isDebugHanon = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "hanon";
+
 export default function App() {
   const [user, setUser] = useState(null);
+  const [debugUser, setDebugUser] = useState(() =>
+    isDebugHanon ? { uid: "debug-hanon", displayName: "はのん", email: "muranakahanon@gmail.com" } : null
+  );
   const [authLoading, setAuthLoading] = useState(true);
+
+  const activeUser = user || debugUser;
+
+  const [currentUser, setCurrentUser] = useState(() => {
+    if (isDebugHanon) return "hanon";
+    return localStorage.getItem("futarigoto_current_user") || "yuma";
+  });
 
   const [date, setDate] = useState(() => new Date().toISOString().split("T")[0]);
   const [store, setStore] = useState("");
-  const [payer, setPayer] = useState("yuma");
+  const [payer, setPayer] = useState(() => {
+    if (isDebugHanon) return "hanon";
+    return localStorage.getItem("futarigoto_current_user") || "yuma";
+  });
   const [partnerItems, setPartnerItems] = useState([newRow()]);
   const [sharedItems, setSharedItems] = useState([newRow()]);
   const [submitting, setSubmitting] = useState(false);
@@ -37,19 +52,27 @@ export default function App() {
     return onAuthStateChanged(auth, (u) => {
       setUser(u);
       setAuthLoading(false);
+      if (u) {
+        const isHanon = u.email === "muranakahanon@gmail.com" || isDebugHanon;
+        const initialUser = isHanon ? "hanon" : "yuma";
+        setCurrentUser(initialUser);
+        setPayer(initialUser);
+        localStorage.setItem("futarigoto_current_user", initialUser);
+      }
     });
   }, []);
 
+
   // 2. Firestoreリアルタイム取得
   useEffect(() => {
-    if (!user) return;
+    if (!activeUser) return;
     const q = query(collection(db, "expenses"), orderBy("date", "desc"));
     return onSnapshot(q, (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       list.sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
       setExpenses(list);
     });
-  }, [user]);
+  }, [activeUser]);
 
   // 3. 入力欄の増殖・更新・削除
   const addRow = (isPartner) => {
@@ -142,10 +165,10 @@ export default function App() {
 
   if (authLoading) return <Center h="100vh"><Loader size="lg" /></Center>;
 
-  if (!user) {
+  if (!activeUser) {
     return (
       <Container size="xs" py="xl">
-        <Paper withBorder shadow="sm" p="xl" radius="md" ta="center">
+        <Paper withBorder shadow="sm" p="xl" radius="lg" ta="center">
           <IconReceipt2 size={48} color="#228be6" />
           <Title order={2} mt="sm">futarigoto</Title>
           <Text c="dimmed" size="sm" mt="xs" mb="xl">ふたりの立替計算簿</Text>
@@ -159,6 +182,17 @@ export default function App() {
 
   const displayed = showSettled ? expenses : unsettled;
 
+  const payerOptions =
+    currentUser === "hanon"
+      ? [
+          { label: "はのん支払い", value: "hanon" },
+          { label: "ゆうま支払い", value: "yuma" },
+        ]
+      : [
+          { label: "ゆうま支払い", value: "yuma" },
+          { label: "はのん支払い", value: "hanon" },
+        ];
+
   return (
     <Container
       size="xs"
@@ -167,24 +201,45 @@ export default function App() {
         paddingBottom: "max(80px, calc(env(safe-area-inset-bottom, 0px) + 80px))",
       }}
     >
-      <Group justify="space-between" mb="md">
-        <Group gap="xs">
+      <Group justify="space-between" mb="md" wrap="nowrap">
+        <Group gap="xs" wrap="nowrap">
           <IconReceipt2 size={24} color="#228be6" />
-          <Title order={3}>futarigoto</Title>
-          <Badge c="white" bg="blue" radius="lg" p="xs">beta</Badge>
+          <Title order={3}>Futarigoto</Title>
+          <Badge c="white" bg="blue" radius="xl" p="xs">beta</Badge>
         </Group>
-        <Button variant="subtle" color="gray" size="xs" leftSection={<IconLogout size={14} />} onClick={() => signOut(auth)}>
-          ログアウト
-        </Button>
+        <Group gap="xs" wrap="nowrap">
+          <Button
+            variant="subtle"
+            color="gray"
+            size="xs"
+            p="xs"
+            leftSection={<IconLogout size={14} />}
+            onClick={() => {
+              setDebugUser(null);
+              signOut(auth);
+            }}
+          >
+            ログアウト
+          </Button>
+        </Group>
       </Group>
 
-      <Paper withBorder shadow="sm" p="md" radius="md" mb="lg" bg="blue.0">
+      <Paper withBorder shadow="sm" p="md" radius="lg" mb="lg" bg="blue.0">
         <Group justify="space-between" mb={4}>
-          <Text size="xs" c="dimmed">ゆうま立替: ¥{yumaClaim.toLocaleString()}</Text>
-          <Text size="xs" c="dimmed">はのん立替: ¥{hanonClaim.toLocaleString()}</Text>
+          {currentUser === "hanon" ? (
+            <>
+              <Text size="xs" c="dimmed">はのん立替: ¥{hanonClaim.toLocaleString()}</Text>
+              <Text size="xs" c="dimmed">ゆうま立替: ¥{yumaClaim.toLocaleString()}</Text>
+            </>
+          ) : (
+            <>
+              <Text size="xs" c="dimmed">ゆうま立替: ¥{yumaClaim.toLocaleString()}</Text>
+              <Text size="xs" c="dimmed">はのん立替: ¥{hanonClaim.toLocaleString()}</Text>
+            </>
+          )}
         </Group>
         <Title order={3} ta="center" my="sm" c={diff === 0 ? "gray.7" : "blue.9"}>
-          {diff > 0 ? `はのん → ゆうま に ¥${diff.toLocaleString()}` : diff < 0 ? `ゆうま → はのん に ¥${Math.abs(diff).toLocaleString()}` : "精算なし（¥0）"}
+          {diff > 0 ? `はのん が ゆうま に ¥${diff.toLocaleString()}` : diff < 0 ? `ゆうま が はのん に ¥${Math.abs(diff).toLocaleString()}` : "精算なし（¥0）"}
         </Title>
         {unsettled.length > 0 && (
           <Button fullWidth color="teal" leftSection={<IconCheck size={18} />} onClick={handleSettleAll} mt="xs">
@@ -193,16 +248,16 @@ export default function App() {
         )}
       </Paper>
 
-      <Paper withBorder shadow="xs" p="md" radius="md" mb="xl">
+      <Paper withBorder shadow="xs" p="md" radius="lg" mb="xl">
         <form onSubmit={handleSubmit}>
           <Stack gap="sm">
             <SegmentedControl
               fullWidth size="md" value={payer} onChange={setPayer}
               color={payer === "yuma" ? "blue" : "pink"}
-              data={[{ label: "🙋‍♂️ ゆうま支払い", value: "yuma" }, { label: "🙋‍♀️ はのん支払い", value: "hanon" }]}
+              data={payerOptions}
             />
             <TextInput label="日付" type="date" value={date} onChange={(e) => setDate(e.currentTarget.value)} required />
-            <TextInput label="店舗｜購入品目" placeholder="例：ツルヤ｜野菜、牛乳など" value={store} onChange={(e) => setStore(e.currentTarget.value)} required />
+            <TextInput label="店舗｜購入品目" value={store} onChange={(e) => setStore(e.currentTarget.value)} required />
 
             <Divider my="xs" label={`【${payer === "yuma" ? "はのん" : "ゆうま"}の分】（100%請求）`} labelPosition="left" />
             {partnerItems.map((item, idx) => (
@@ -215,7 +270,7 @@ export default function App() {
               </Group>
             ))}
             <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => addRow(true)}>
-              相手の分の金額欄を追加
+              追加
             </Button>
 
             <Divider my="xs" label="【共有物品】（50%折半）" labelPosition="left" />
@@ -229,7 +284,7 @@ export default function App() {
               </Group>
             ))}
             <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => addRow(false)}>
-              共有物品の金額欄を追加
+              追加
             </Button>
 
             <Button type="submit" size="md" fullWidth mt="sm" loading={submitting}>記録する</Button>
@@ -247,7 +302,7 @@ export default function App() {
           const pTotal = Math.round((ex.partnerAmounts?.inTax || 0) + (ex.partnerAmounts?.tax8 || 0) * 1.08 + (ex.partnerAmounts?.tax10 || 0) * 1.1);
           const sTotal = Math.round((ex.sharedAmounts?.inTax || 0) + (ex.sharedAmounts?.tax8 || 0) * 1.08 + (ex.sharedAmounts?.tax10 || 0) * 1.1);
           return (
-            <Card key={ex.id} withBorder radius="md" p="sm" opacity={ex.isSettled ? 0.6 : 1}>
+            <Card key={ex.id} withBorder radius="lg" p="sm" opacity={ex.isSettled ? 0.6 : 1}>
               <Group justify="space-between" wrap="nowrap">
                 <Group gap="sm" wrap="nowrap" style={{ flex: 1 }}>
                   <Checkbox checked={ex.isSettled} onChange={() => updateDoc(doc(db, "expenses", ex.id), { isSettled: !ex.isSettled })} />
