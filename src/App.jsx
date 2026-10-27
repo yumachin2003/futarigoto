@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  Container, Paper, Title, Text, Button, Group, Stack,
+  Container, Paper, Title, Text, Box, Button, Group, Stack,
   SegmentedControl, TextInput, ActionIcon, Badge, Checkbox,
   Divider, Card, Center, Loader
 } from "@mantine/core";
@@ -165,6 +165,7 @@ export default function App() {
         <Group gap="xs">
           <IconReceipt2 size={24} color="#228be6" />
           <Title order={3}>futarigoto</Title>
+          <Badge c="white" bg="blue" radius="lg" p="xs">beta</Badge>
         </Group>
         <Button variant="subtle" color="gray" size="xs" leftSection={<IconLogout size={14} />} onClick={() => signOut(auth)}>
           ログアウト
