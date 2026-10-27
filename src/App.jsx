@@ -169,10 +169,45 @@ export default function App() {
     return (
       <Container size="xs" py="xl">
         <Paper withBorder shadow="sm" p="xl" radius="lg" ta="center">
-          <IconReceipt2 size={48} color="#228be6" />
-          <Title order={2} mt="sm">futarigoto</Title>
-          <Text c="dimmed" size="sm" mt="xs" mb="xl">ふたりの立替計算簿</Text>
-          <Button fullWidth size="md" leftSection={<IconBrandGoogle size={20} />} onClick={() => signInWithPopup(auth, googleProvider)}>
+          <IconReceipt2 size={48} color="#228be6" style={{ animation: "floatInIcon 0.6s cubic-bezier(0.16, 1, 0.3, 1) both", display: "inline-block" }} />
+          <Title order={2} mt="sm" style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "5rem", lineHeight: 1.15 }}>
+            {"Futarigoto".split("").map((char, i) => (
+              <span
+                key={i}
+                style={{
+                  display: "inline-block",
+                  animation: "floatInChar 0.55s cubic-bezier(0.16, 1, 0.3, 1) both",
+                  animationDelay: `${0.1 + i * 0.05}s`,
+                }}
+              >
+                {char}
+              </span>
+            ))}
+          </Title>
+          <Text c="dimmed" size="sm" mt="xs" mb="xl">
+            {"ふたりの立替計算簿".split("").map((char, i) => (
+              <span
+                key={i}
+                style={{
+                  display: "inline-block",
+                  animation: "floatInChar 0.5s cubic-bezier(0.16, 1, 0.3, 1) both",
+                  animationDelay: `${0.45 + i * 0.04}s`,
+                }}
+              >
+                {char}
+              </span>
+            ))}
+          </Text>
+          <Button
+            fullWidth
+            size="md"
+            leftSection={<IconBrandGoogle size={20} />}
+            onClick={() => signInWithPopup(auth, googleProvider)}
+            style={{
+              animation: "floatInButton 0.65s cubic-bezier(0.16, 1, 0.3, 1) both",
+              animationDelay: "0.8s",
+            }}
+          >
             Googleでログイン
           </Button>
         </Paper>
@@ -203,8 +238,8 @@ export default function App() {
     >
       <Group justify="space-between" mb="md" wrap="nowrap">
         <Group gap="xs" wrap="nowrap">
-          <IconReceipt2 size={24} color="#228be6" />
-          <Title order={3}>Futarigoto</Title>
+          <IconReceipt2 size={28} color="#228be6" />
+          <Title order={3} style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "2rem", marginLeft: "-7px", marginRight: "9px" }}>Futarigoto</Title>
           <Badge c="white" bg="blue" radius="xl" p="xs">beta</Badge>
         </Group>
         <Group gap="xs" wrap="nowrap">
