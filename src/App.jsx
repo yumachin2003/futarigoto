@@ -1,22 +1,35 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Container, Paper, Title, Text, Button, Group, Stack,
   SegmentedControl, TextInput, ActionIcon, Badge, Checkbox,
-  Divider, Card, Center, Loader
+  Divider, Card, Center, Loader, Box, Alert
 } from "@mantine/core";
 import {
   IconPlus, IconTrash, IconCheck, IconLogout,
-  IconBrandGoogle, IconReceipt2
+  IconBrandGoogle, IconDiscount2,
+  IconUpload, IconDownload
 } from "@tabler/icons-react";
 import {
   collection, addDoc, onSnapshot, query, orderBy,
   writeBatch, doc, updateDoc, deleteDoc
 } from "firebase/firestore";
-import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
+import { onAuthStateChanged, signInWithPopup, signOut, GoogleAuthProvider, signInWithCredential } from "firebase/auth";
 import { db, auth, googleProvider } from "./FirebaseConfig";
+import paperGrid from "./assets/paper-grid.webp";
+import futarigotoIcon from "./assets/futarigoto_icon_blue.svg";
+import futarigotoLogo from "./assets/futarigoto_logo_small.svg";
+import CsvImportModal from "./components/CsvImportModal";
+import { exportExpensesToCsv } from "./utils/csvHelper";
 
 
-const newRow = () => ({ id: crypto.randomUUID(), amount: "", taxType: "tax8" });
+const newRow = () => ({
+  id: crypto.randomUUID(),
+  amount: "",
+  taxType: "tax8",
+  hasDiscount: false,
+  discountType: "amount",
+  discountValue: "",
+});
 
 const isDebugHanon = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "hanon";
 
@@ -46,6 +59,18 @@ export default function App() {
 
   const [expenses, setExpenses] = useState([]);
   const [showSettled, setShowSettled] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState("");
+
+  const handleImportSuccess = (count) => {
+    setFeedbackMessage(`${count}件の履歴をインポートしました！`);
+    setTimeout(() => {
+      setFeedbackMessage("");
+    }, 4500);
+  };
+
+  const [authError, setAuthError] = useState("");
+  const googleBtnRef = useRef(null);
 
   // 1. ログイン監視
   useEffect(() => {
@@ -61,6 +86,51 @@ export default function App() {
       }
     });
   }, []);
+
+  // Google Identity Services (GIS) ボタン初期化
+  useEffect(() => {
+    if (activeUser || authLoading) return;
+
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!clientId) return;
+
+    const initGsi = () => {
+      if (typeof window === "undefined" || !window.google?.accounts?.id || !googleBtnRef.current) return false;
+
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: async (response) => {
+          try {
+            setAuthError("");
+            const credential = GoogleAuthProvider.credential(response.credential);
+            await signInWithCredential(auth, credential);
+          } catch (err) {
+            console.error("GIS Sign-In Error:", err);
+            setAuthError("ログインに失敗しました: " + (err.message || ""));
+          }
+        },
+      });
+
+      window.google.accounts.id.renderButton(googleBtnRef.current, {
+        theme: "outline",
+        size: "large",
+        type: "standard",
+        shape: "pill",
+        text: "signin_with",
+        logo_alignment: "left",
+        width: 280,
+      });
+
+      return true;
+    };
+
+    if (!initGsi()) {
+      const timer = setInterval(() => {
+        if (initGsi()) clearInterval(timer);
+      }, 200);
+      return () => clearInterval(timer);
+    }
+  }, [activeUser, authLoading]);
 
 
   // 2. Firestoreリアルタイム取得
@@ -91,9 +161,37 @@ export default function App() {
     if (!isPartner && sharedItems.length > 1) setSharedItems(sharedItems.filter((x) => x.id !== id));
   };
 
+  const toggleDiscount = (isPartner, id) => {
+    const fn = (items) =>
+      items.map((x) =>
+        x.id === id
+          ? {
+              ...x,
+              hasDiscount: !x.hasDiscount,
+              discountValue: x.hasDiscount ? "" : x.discountValue,
+            }
+          : x
+      );
+    if (isPartner) setPartnerItems(fn);
+    else setSharedItems(fn);
+  };
+
+  const getEffectiveAmount = (item) => {
+    const base = Number(item.amount) || 0;
+    if (!item.hasDiscount || !item.discountValue) return base;
+    const disc = Number(item.discountValue) || 0;
+    if (item.discountType === "percent") {
+      return Math.max(0, Math.round(base * (1 - disc / 100)));
+    }
+    return Math.max(0, base - disc);
+  };
+
   const sumByTax = (items) =>
     items.reduce(
-      (acc, x) => ({ ...acc, [x.taxType]: acc[x.taxType] + (Number(x.amount) || 0) }),
+      (acc, x) => {
+        const amt = getEffectiveAmount(x);
+        return { ...acc, [x.taxType]: acc[x.taxType] + amt };
+      },
       { inTax: 0, tax8: 0, tax10: 0 }
     );
 
@@ -155,7 +253,7 @@ export default function App() {
   );
   const diff = yumaClaim - hanonClaim;
 
-  // 6. 一括精算・初期データ投入
+  // 6. 一括精算
   const handleSettleAll = async () => {
     if (!window.confirm(`未精算の ${unsettled.length} 件をすべて精算済にしますか？`)) return;
     const batch = writeBatch(db);
@@ -165,11 +263,47 @@ export default function App() {
 
   if (authLoading) return <Center h="100vh"><Loader size="lg" /></Center>;
 
+  // 未ログイン状態
   if (!activeUser) {
     return (
       <Container size="xs" py="xl">
-        <Paper withBorder shadow="sm" p="xl" radius="lg" ta="center">
-          <IconReceipt2 size={48} color="#228be6" style={{ animation: "floatInIcon 0.6s cubic-bezier(0.16, 1, 0.3, 1) both", display: "inline-block" }} />
+        <Box
+          pos="relative"
+          ta="center"
+          style={{
+            aspectRatio: "953 / 1037",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            alignItems: "center",
+            // 左はリング穴、上はテープの分だけ余白を広めに
+            padding: "14% 7% 7% 13%",
+            isolation: "isolate",
+          }}
+        >
+          <img
+            src={paperGrid}
+            alt=""
+            aria-hidden
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              zIndex: -1,
+              filter: "drop-shadow(0 8px 14px rgba(0, 0, 0, 0.18))",
+            }}
+          />
+          <img
+            src={futarigotoIcon}
+            alt="Futarigoto"
+            style={{
+              width: 110,
+              objectFit: "contain",
+              animation: "floatInIcon 0.6s cubic-bezier(0.16, 1, 0.3, 1) both",
+              display: "inline-block",
+            }}
+          />
           <Title order={2} mt="sm" style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "5rem", lineHeight: 1.15 }}>
             {"Futarigoto".split("").map((char, i) => (
               <span
@@ -187,7 +321,7 @@ export default function App() {
               </span>
             ))}
           </Title>
-          <Text c="dimmed" size="sm" mt="xs" mb="xl">
+          <Text c="dimmed" size="lg" mt="xs" mb="xl">
             {"ふたりの立替計算簿".split("").map((char, i) => (
               <span
                 key={i}
@@ -201,19 +335,55 @@ export default function App() {
               </span>
             ))}
           </Text>
-          <Button
-            fullWidth
-            size="md"
-            leftSection={<IconBrandGoogle size={20} />}
-            onClick={() => signInWithPopup(auth, googleProvider)}
+          {authError && (
+            <Alert color="red" mb="md" withCloseButton onClose={() => setAuthError("")}>
+              {authError}
+            </Alert>
+          )}
+
+          <Box
             style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              minHeight: 48,
               animation: "floatInButton 0.65s cubic-bezier(0.16, 1, 0.3, 1) both",
               animationDelay: "0.8s",
             }}
           >
-            Googleでログイン
-          </Button>
-        </Paper>
+            <div
+              ref={googleBtnRef}
+              style={{
+                display: "inline-flex",
+                justifyContent: "center",
+                borderRadius: 9999,
+                boxShadow: "0 4px 14px 0 rgba(0, 0, 0, 0.1), 0 1px 3px 0 rgba(0, 0, 0, 0.08)",
+                transition: "box-shadow 0.2s ease, transform 0.2s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.boxShadow = "0 6px 20px 0 rgba(0, 0, 0, 0.15), 0 2px 6px 0 rgba(0, 0, 0, 0.1)";
+                e.currentTarget.style.transform = "translateY(-1px)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.boxShadow = "0 4px 14px 0 rgba(0, 0, 0, 0.1), 0 1px 3px 0 rgba(0, 0, 0, 0.08)";
+                e.currentTarget.style.transform = "translateY(0)";
+              }}
+            />
+
+            {/* VITE_GOOGLE_CLIENT_ID が未設定またはスクリプト読込待機用のフォールバック */}
+            {!import.meta.env.VITE_GOOGLE_CLIENT_ID && (
+              <Button
+                fullWidth
+                size="md"
+                leftSection={<IconBrandGoogle size={20} />}
+                onClick={() => signInWithPopup(auth, googleProvider)}
+              >
+                Googleでログイン
+              </Button>
+            )}
+          </Box>
+        </Box>
       </Container>
     );
   }
@@ -240,9 +410,19 @@ export default function App() {
       }}
     >
       <Group justify="space-between" mb="md" wrap="nowrap">
-        <Group gap="xs" wrap="nowrap">
-          <IconReceipt2 size={28} color="#228be6" />
-          <Title order={3} style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "2rem", marginLeft: "-7px", marginRight: "9px" }}>Futarigoto</Title>
+        <Group gap="xs" wrap="nowrap" align="center">
+          <img
+            src={futarigotoLogo}
+            alt="Futarigoto"
+            style={{
+              width: 40,
+              objectFit: "contain",
+              display: "block",
+              margin: "-16px -12px -16px -8px",
+              filter: "invert(53%) sepia(51%) saturate(767%) hue-rotate(174deg) brightness(92%) contrast(87%)",
+            }}
+          />
+          <Title order={3} style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "2rem",margin: "9px" }}>Futarigoto</Title>
           <Badge c="white" bg="blue" radius="xl" p="xs">beta</Badge>
         </Group>
         <Group gap="xs" wrap="nowrap">
@@ -277,7 +457,7 @@ export default function App() {
           )}
         </Group>
         <Title order={3} ta="center" my="sm" c={diff === 0 ? "gray.7" : "blue.9"}>
-          {diff > 0 ? `はのん が ゆうま に ¥${diff.toLocaleString()}` : diff < 0 ? `ゆうま が はのん に ¥${Math.abs(diff).toLocaleString()}` : "精算なし（¥0）"}
+          {diff > 0 ? `はのん が ゆうま に ${diff.toLocaleString()}円支払う` : diff < 0 ? `ゆうま が はのん に ¥${Math.abs(diff).toLocaleString()}円支払う` : "精算なし（¥0）"}
         </Title>
         {unsettled.length > 0 && (
           <Button fullWidth color="teal" leftSection={<IconCheck size={18} />} onClick={handleSettleAll} mt="xs">
@@ -299,13 +479,74 @@ export default function App() {
 
             <Divider my="xs" label={`【${payer === "yuma" ? "はのん" : "ゆうま"}の分】（100%請求）`} labelPosition="left" />
             {partnerItems.map((item, idx) => (
-              <Group key={item.id} gap="xs" wrap="nowrap">
-                <TextInput type="number" inputMode="numeric" placeholder={`金額 ${idx + 1}`} value={item.amount} onChange={(e) => updateRow(true, item.id, "amount", e.currentTarget.value)} style={{ flex: 1 }} />
-                <SegmentedControl size="xs" value={item.taxType} onChange={(val) => updateRow(true, item.id, "taxType", val)} data={[{ label: "8%", value: "tax8" }, { label: "10%", value: "tax10" }, { label: "内税", value: "inTax" }]} />
-                {partnerItems.length > 1 && (
-                  <ActionIcon color="red" variant="subtle" onClick={() => removeRow(true, item.id)}><IconTrash size={16} /></ActionIcon>
+              <Stack key={item.id} gap={4}>
+                <Group gap="xs" wrap="nowrap">
+                  <TextInput
+                    type="number"
+                    inputMode="numeric"
+                    placeholder={`金額 ${idx + 1}`}
+                    value={item.amount}
+                    onChange={(e) => updateRow(true, item.id, "amount", e.currentTarget.value)}
+                    style={{ flex: 1 }}
+                  />
+                  <SegmentedControl
+                    size="xs"
+                    value={item.taxType}
+                    onChange={(val) => updateRow(true, item.id, "taxType", val)}
+                    data={[
+                      { label: "8%", value: "tax8" },
+                      { label: "10%", value: "tax10" },
+                      { label: "内税", value: "inTax" },
+                    ]}
+                  />
+                  <ActionIcon
+                    variant={item.hasDiscount ? "filled" : "light"}
+                    color={item.hasDiscount ? "orange" : "gray"}
+                    size="md"
+                    radius="md"
+                    onClick={() => toggleDiscount(true, item.id)}
+                    title="値引きあり"
+                  >
+                    <IconDiscount2 size={16} />
+                  </ActionIcon>
+                  {partnerItems.length > 1 && (
+                    <ActionIcon color="red" variant="subtle" size="md" onClick={() => removeRow(true, item.id)}>
+                      <IconTrash size={16} />
+                    </ActionIcon>
+                  )}
+                </Group>
+                {item.hasDiscount && (
+                  <Paper p="xs" radius="md" bg="orange.0" withBorder>
+                    <Group justify="space-between" wrap="nowrap" gap="xs">
+                      <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
+                        <SegmentedControl
+                          size="xs"
+                          value={item.discountType || "amount"}
+                          onChange={(val) => updateRow(true, item.id, "discountType", val)}
+                          data={[
+                            { label: "円引", value: "amount" },
+                            { label: "%引", value: "percent" },
+                          ]}
+                        />
+                        <TextInput
+                          size="xs"
+                          type="number"
+                          inputMode="numeric"
+                          placeholder={item.discountType === "percent" ? "割引率 (例: 20)" : "値引額 (例: 50)"}
+                          value={item.discountValue || ""}
+                          onChange={(e) => updateRow(true, item.id, "discountValue", e.currentTarget.value)}
+                          style={{ flex: 1 }}
+                        />
+                      </Group>
+                      {item.amount && item.discountValue ? (
+                        <Badge color="orange" variant="light" size="sm">
+                          ¥{getEffectiveAmount(item).toLocaleString()}
+                        </Badge>
+                      ) : null}
+                    </Group>
+                  </Paper>
                 )}
-              </Group>
+              </Stack>
             ))}
             <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => addRow(true)}>
               追加
@@ -313,13 +554,74 @@ export default function App() {
 
             <Divider my="xs" label="【共有物品】（50%折半）" labelPosition="left" />
             {sharedItems.map((item, idx) => (
-              <Group key={item.id} gap="xs" wrap="nowrap">
-                <TextInput type="number" inputMode="numeric" placeholder={`金額 ${idx + 1}`} value={item.amount} onChange={(e) => updateRow(false, item.id, "amount", e.currentTarget.value)} style={{ flex: 1 }} />
-                <SegmentedControl size="xs" value={item.taxType} onChange={(val) => updateRow(false, item.id, "taxType", val)} data={[{ label: "8%", value: "tax8" }, { label: "10%", value: "tax10" }, { label: "内税", value: "inTax" }]} />
-                {sharedItems.length > 1 && (
-                  <ActionIcon color="red" variant="subtle" onClick={() => removeRow(false, item.id)}><IconTrash size={16} /></ActionIcon>
+              <Stack key={item.id} gap={4}>
+                <Group gap="xs" wrap="nowrap">
+                  <TextInput
+                    type="number"
+                    inputMode="numeric"
+                    placeholder={`金額 ${idx + 1}`}
+                    value={item.amount}
+                    onChange={(e) => updateRow(false, item.id, "amount", e.currentTarget.value)}
+                    style={{ flex: 1 }}
+                  />
+                  <SegmentedControl
+                    size="xs"
+                    value={item.taxType}
+                    onChange={(val) => updateRow(false, item.id, "taxType", val)}
+                    data={[
+                      { label: "8%", value: "tax8" },
+                      { label: "10%", value: "tax10" },
+                      { label: "内税", value: "inTax" },
+                    ]}
+                  />
+                  <ActionIcon
+                    variant={item.hasDiscount ? "filled" : "light"}
+                    color={item.hasDiscount ? "orange" : "gray"}
+                    size="md"
+                    radius="md"
+                    onClick={() => toggleDiscount(false, item.id)}
+                    title="値引きあり"
+                  >
+                    <IconDiscount2 size={16} />
+                  </ActionIcon>
+                  {sharedItems.length > 1 && (
+                    <ActionIcon color="red" variant="subtle" size="md" onClick={() => removeRow(false, item.id)}>
+                      <IconTrash size={16} />
+                    </ActionIcon>
+                  )}
+                </Group>
+                {item.hasDiscount && (
+                  <Paper p="xs" radius="md" bg="orange.0" withBorder>
+                    <Group justify="space-between" wrap="nowrap" gap="xs">
+                      <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
+                        <SegmentedControl
+                          size="xs"
+                          value={item.discountType || "amount"}
+                          onChange={(val) => updateRow(false, item.id, "discountType", val)}
+                          data={[
+                            { label: "円引", value: "amount" },
+                            { label: "%引", value: "percent" },
+                          ]}
+                        />
+                        <TextInput
+                          size="xs"
+                          type="number"
+                          inputMode="numeric"
+                          placeholder={item.discountType === "percent" ? "割引率 (例: 20)" : "値引額 (例: 50)"}
+                          value={item.discountValue || ""}
+                          onChange={(e) => updateRow(false, item.id, "discountValue", e.currentTarget.value)}
+                          style={{ flex: 1 }}
+                        />
+                      </Group>
+                      {item.amount && item.discountValue ? (
+                        <Badge color="orange" variant="light" size="sm">
+                          ¥{getEffectiveAmount(item).toLocaleString()}
+                        </Badge>
+                      ) : null}
+                    </Group>
+                  </Paper>
                 )}
-              </Group>
+              </Stack>
             ))}
             <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => addRow(false)}>
               追加
@@ -330,9 +632,42 @@ export default function App() {
         </form>
       </Paper>
 
-      <Group justify="space-between" mb="sm">
+      {feedbackMessage && (
+        <Alert
+          color="teal"
+          icon={<IconCheck size={16} />}
+          radius="md"
+          mb="md"
+          withCloseButton
+          onClose={() => setFeedbackMessage("")}
+        >
+          {feedbackMessage}
+        </Alert>
+      )}
+
+      <Group justify="space-between" mb="xs" align="center">
         <Title order={4}>履歴（{displayed.length}件）</Title>
         <Checkbox label="精算済も表示" checked={showSettled} onChange={(e) => setShowSettled(e.currentTarget.checked)} size="xs" />
+      </Group>
+
+      <Group justify="flex-start" mb="sm" gap="xs">
+        <Button
+          variant="light"
+          size="xs"
+          leftSection={<IconUpload size={14} />}
+          onClick={() => setImportModalOpen(true)}
+        >
+          CSVインポート
+        </Button>
+        <Button
+          variant="default"
+          size="xs"
+          leftSection={<IconDownload size={14} />}
+          onClick={() => exportExpensesToCsv(expenses)}
+          disabled={expenses.length === 0}
+        >
+          CSVエクスポート
+        </Button>
       </Group>
 
       <Stack gap="xs">
@@ -365,6 +700,14 @@ export default function App() {
           );
         })}
       </Stack>
+
+      <CsvImportModal
+        opened={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        currentUser={currentUser}
+        db={db}
+        onImportSuccess={handleImportSuccess}
+      />
     </Container>
   );
 }

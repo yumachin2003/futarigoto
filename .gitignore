@@ -26,3 +26,6 @@ dist-ssr
 
 # Firebase
 .firebase/
+
+# AI
+.claude
