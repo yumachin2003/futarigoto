@@ -71,6 +71,18 @@ export default function App() {
 
   const [authError, setAuthError] = useState("");
   const googleBtnRef = useRef(null);
+  const amountInputRefs = useRef({});
+  const pendingFocusId = useRef(null);
+
+  useEffect(() => {
+    if (pendingFocusId.current) {
+      const input = amountInputRefs.current[pendingFocusId.current];
+      if (input) {
+        input.focus();
+      }
+      pendingFocusId.current = null;
+    }
+  }, [partnerItems, sharedItems]);
 
   // 1. ログイン監視
   useEffect(() => {
@@ -145,9 +157,20 @@ export default function App() {
   }, [activeUser]);
 
   // 3. 入力欄の増殖・更新・削除
-  const addRow = (isPartner) => {
-    if (isPartner) setPartnerItems([...partnerItems, newRow()]);
-    else setSharedItems([...sharedItems, newRow()]);
+  const addRow = (isPartner, shouldFocus = false) => {
+    const row = newRow();
+    if (shouldFocus) {
+      pendingFocusId.current = row.id;
+    }
+    if (isPartner) setPartnerItems((prev) => [...prev, row]);
+    else setSharedItems((prev) => [...prev, row]);
+  };
+
+  const handleAmountKeyDown = (e, isPartner) => {
+    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      addRow(isPartner, true);
+    }
   };
 
   const updateRow = (isPartner, id, field, value) => {
@@ -482,11 +505,16 @@ export default function App() {
               <Stack key={item.id} gap={4}>
                 <Group gap="xs" wrap="nowrap">
                   <TextInput
+                    ref={(el) => {
+                      amountInputRefs.current[item.id] = el;
+                    }}
                     type="number"
                     inputMode="numeric"
+                    enterKeyHint="next"
                     placeholder={`金額 ${idx + 1}`}
                     value={item.amount}
                     onChange={(e) => updateRow(true, item.id, "amount", e.currentTarget.value)}
+                    onKeyDown={(e) => handleAmountKeyDown(e, true)}
                     style={{ flex: 1 }}
                   />
                   <SegmentedControl
@@ -532,9 +560,11 @@ export default function App() {
                           size="xs"
                           type="number"
                           inputMode="numeric"
+                          enterKeyHint="next"
                           placeholder={item.discountType === "percent" ? "割引率 (例: 20)" : "値引額 (例: 50)"}
                           value={item.discountValue || ""}
                           onChange={(e) => updateRow(true, item.id, "discountValue", e.currentTarget.value)}
+                          onKeyDown={(e) => handleAmountKeyDown(e, true)}
                           style={{ flex: 1 }}
                         />
                       </Group>
@@ -557,11 +587,16 @@ export default function App() {
               <Stack key={item.id} gap={4}>
                 <Group gap="xs" wrap="nowrap">
                   <TextInput
+                    ref={(el) => {
+                      amountInputRefs.current[item.id] = el;
+                    }}
                     type="number"
                     inputMode="numeric"
+                    enterKeyHint="next"
                     placeholder={`金額 ${idx + 1}`}
                     value={item.amount}
                     onChange={(e) => updateRow(false, item.id, "amount", e.currentTarget.value)}
+                    onKeyDown={(e) => handleAmountKeyDown(e, false)}
                     style={{ flex: 1 }}
                   />
                   <SegmentedControl
@@ -607,9 +642,11 @@ export default function App() {
                           size="xs"
                           type="number"
                           inputMode="numeric"
+                          enterKeyHint="next"
                           placeholder={item.discountType === "percent" ? "割引率 (例: 20)" : "値引額 (例: 50)"}
                           value={item.discountValue || ""}
                           onChange={(e) => updateRow(false, item.id, "discountValue", e.currentTarget.value)}
+                          onKeyDown={(e) => handleAmountKeyDown(e, false)}
                           style={{ flex: 1 }}
                         />
                       </Group>
