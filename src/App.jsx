@@ -3,7 +3,7 @@ import {
   Container, Paper, Title, Text, Button, Group, Stack,
   SegmentedControl, TextInput, ActionIcon, Badge, Checkbox,
   Divider, Card, Center, Loader, Box, Alert, UnstyledButton,
-  ThemeIcon
+  ThemeIcon, Avatar
 } from "@mantine/core";
 import {
   IconPlus, IconTrash, IconCheck, IconLogout,
@@ -581,13 +581,12 @@ export default function App() {
           <Badge c="white" bg="blue" radius="xl" size="sm">beta</Badge>
         </Group>
         <Group gap="xs" wrap="nowrap">
-          <Badge
-            size="sm"
-            variant="light"
-            color={currentUser === "hanon" ? "pink" : "blue"}
-          >
-            {currentUser === "hanon" ? "はのん" : "ゆうま"}
-          </Badge>
+          <Avatar
+            src={activeUser.photoURL}
+            size="md"
+            radius="xl"
+            imageProps={{ referrerPolicy: "no-referrer" }}
+          />
         </Group>
       </Group>
 
@@ -951,22 +950,29 @@ export default function App() {
           {/* アカウント情報 */}
           <Card withBorder radius="lg" p="md">
             <Group gap="sm" mb="xs">
-              <ThemeIcon color="gray" size="lg" radius="md" variant="light">
-                <IconUser size={20} />
-              </ThemeIcon>
+              {activeUser?.photoURL ? (
+                <Avatar
+                  src={activeUser.photoURL}
+                  size="lg"
+                  radius="md"
+                  imageProps={{ referrerPolicy: "no-referrer" }}
+                />
+              ) : (
+                <ThemeIcon color="gray" size="lg" radius="md" variant="light">
+                  <IconUser size={20} />
+                </ThemeIcon>
+              )}
               <div>
                 <Text fw={600} size="sm">アカウント情報</Text>
                 <Text size="xs" c="dimmed">{activeUser?.email || "ログイン中"}</Text>
               </div>
             </Group>
-            <Group justify="space-between" mt="xs" align="center">
-              <Badge size="md" color={currentUser === "hanon" ? "pink" : "blue"}>
-                {currentUser === "hanon" ? "はのん" : "ゆうま"} としてログイン中
-              </Badge>
+            <Group justify="flex-end" mt="md">
               <Button
                 variant="subtle"
                 color="red"
                 size="xs"
+                justify="flex-end"
                 leftSection={<IconLogout size={14} />}
                 onClick={() => {
                   setDebugUser(null);
