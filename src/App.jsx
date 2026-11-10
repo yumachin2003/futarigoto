@@ -10,7 +10,8 @@ import {
   IconBrandGoogle, IconDiscount2,
   IconUpload, IconDownload, IconHistory,
   IconReceipt, IconCirclePlus, IconDots,
-  IconFileSpreadsheet, IconUser, IconPencil
+  IconFileSpreadsheet, IconUser, IconPencil,
+  IconBell, IconBellRinging
 } from "@tabler/icons-react";
 import {
   collection, addDoc, onSnapshot, query, orderBy,
@@ -27,6 +28,11 @@ import AddSuccessModal from "./components/AddSuccessModal";
 import EditExpenseModal from "./components/EditExpenseModal";
 import { exportExpensesToCsv } from "./utils/csvHelper";
 import { addActivityLog } from "./utils/logHelper";
+import {
+  registerServiceWorker,
+  requestNotificationPermission,
+  setupForegroundMessageListener,
+} from "./utils/notificationHelper";
 
 
 const newRow = () => ({
@@ -89,6 +95,45 @@ export default function App() {
     setTimeout(() => {
       setFeedbackMessage("");
     }, 4500);
+  };
+
+  const [notificationStatus, setNotificationStatus] = useState("default"); // "default" | "granted" | "denied" | "unsupported"
+  const [notificationLoading, setNotificationLoading] = useState(false);
+
+  // 通知状態の初期確認 & ServiceWorker登録
+  useEffect(() => {
+    registerServiceWorker();
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotificationStatus(Notification.permission);
+    } else {
+      setNotificationStatus("unsupported");
+    }
+
+    // フォアグラウンドメッセージ受信時のハンドラ
+    setupForegroundMessageListener((payload) => {
+      const title = payload.notification?.title || payload.data?.title || "ふたりごと";
+      const body = payload.notification?.body || payload.data?.body || "";
+      setFeedbackMessage(`🔔 ${title}: ${body}`);
+      setTimeout(() => setFeedbackMessage(""), 5000);
+    });
+  }, []);
+
+  const handleEnableNotification = async () => {
+    try {
+      setNotificationLoading(true);
+      await requestNotificationPermission(userRole, activeUser?.uid || "anonymous");
+      setNotificationStatus("granted");
+      setFeedbackMessage("プッシュ通知を有効にしました！");
+      setTimeout(() => setFeedbackMessage(""), 4000);
+    } catch (err) {
+      console.error(err);
+      alert(err.message || "通知の有効化に失敗しました");
+      if (typeof window !== "undefined" && "Notification" in window) {
+        setNotificationStatus(Notification.permission);
+      }
+    } finally {
+      setNotificationLoading(false);
+    }
   };
 
   const [authError, setAuthError] = useState("");
@@ -557,38 +602,52 @@ export default function App() {
     <Container
       size="xs"
       style={{
-        paddingTop: "max(24px, calc(env(safe-area-inset-top, 0px) + 12px))",
+        paddingTop: 0,
         paddingBottom: "max(96px, calc(env(safe-area-inset-bottom, 0px) + 96px))",
       }}
     >
       {/* 共通ヘッダー */}
-      <Group justify="space-between" mb="sm" wrap="nowrap" align="center">
-        <Group gap="xs" wrap="nowrap" align="center">
-          <img
-            src={futarigotoLogo}
-            alt="Futarigoto"
-            style={{
-              width: 36,
-              objectFit: "contain",
-              display: "block",
-              margin: "-12px -8px -12px -4px",
-              filter: "invert(53%) sepia(51%) saturate(767%) hue-rotate(174deg) brightness(92%) contrast(87%)",
-            }}
-          />
-          <Title order={3} style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "1.8rem", margin: "4px" }}>
-            Futarigoto
-          </Title>
-          <Badge c="white" bg="blue" radius="xl" size="sm">beta</Badge>
+      <Box
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 30,
+          backgroundColor: "var(--mantine-color-body, #fff)",
+          paddingTop: "max(12px, calc(env(safe-area-inset-top, 0px) + 8px))",
+          paddingBottom: "8px",
+          margin: "0 -16px 8px -16px",
+          paddingLeft: "16px",
+          paddingRight: "16px",
+        }}
+      >
+        <Group justify="space-between" wrap="nowrap" align="center">
+          <Group gap="xs" wrap="nowrap" align="center">
+            <img
+              src={futarigotoLogo}
+              alt="Futarigoto"
+              style={{
+                width: 36,
+                objectFit: "contain",
+                display: "block",
+                margin: "-12px -8px -12px -4px",
+                filter: "invert(53%) sepia(51%) saturate(767%) hue-rotate(174deg) brightness(92%) contrast(87%)",
+              }}
+            />
+            <Title order={3} style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "1.8rem", margin: "4px" }}>
+              Futarigoto
+            </Title>
+            <Badge c="white" bg="blue" radius="xl" size="sm">beta</Badge>
+          </Group>
+          <Group gap="xs" wrap="nowrap">
+            <Avatar
+              src={activeUser?.photoURL}
+              size="sm"
+              radius="xl"
+              imageProps={{ referrerPolicy: "no-referrer" }}
+            />
+          </Group>
         </Group>
-        <Group gap="xs" wrap="nowrap">
-          <Avatar
-            src={activeUser.photoURL}
-            size="md"
-            radius="xl"
-            imageProps={{ referrerPolicy: "no-referrer" }}
-          />
-        </Group>
-      </Group>
+      </Box>
 
       {/* タブ1: 履歴 */}
       {activeTab === "history" && (
@@ -945,6 +1004,51 @@ export default function App() {
                 CSVエクスポート
               </Button>
             </Group>
+          </Card>
+
+          {/* プッシュ通知設定 */}
+          <Card withBorder radius="lg" p="md">
+            <Group gap="sm" mb="xs">
+              <ThemeIcon
+                color={notificationStatus === "granted" ? "teal" : "blue"}
+                size="lg"
+                radius="md"
+                variant="light"
+              >
+                {notificationStatus === "granted" ? (
+                  <IconBellRinging size={20} />
+                ) : (
+                  <IconBell size={20} />
+                )}
+              </ThemeIcon>
+              <div style={{ flex: 1 }}>
+                <Group justify="space-between" align="center">
+                  <Text fw={600} size="sm">プッシュ通知</Text>
+                  {notificationStatus === "granted" && (
+                    <Badge size="xs" color="teal" variant="light">有効</Badge>
+                  )}
+                </Group>
+                <Text size="xs" c="dimmed">
+                  {notificationStatus === "granted"
+                    ? "相手が精算を追加・完了した際に通知されます"
+                    : "相手が追加した時や精算完了の通知を受け取れます"}
+                </Text>
+              </div>
+            </Group>
+            {notificationStatus !== "granted" && (
+              <Button
+                fullWidth
+                mt="xs"
+                variant="light"
+                color="blue"
+                size="xs"
+                loading={notificationLoading}
+                leftSection={<IconBell size={14} />}
+                onClick={handleEnableNotification}
+              >
+                通知を有効にする
+              </Button>
+            )}
           </Card>
 
           {/* アカウント情報 */}

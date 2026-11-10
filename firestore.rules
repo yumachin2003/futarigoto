@@ -1,0 +1,137 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: expenses
+    // Document ID: auto-generated string
+    // Fields:
+    //   - date: string (YYYY-MM-DD format) - required
+    //   - store: string (1-200 chars) - required, purchase store or description
+    //   - payer: string ("yuma" | "hanon") - required
+    //   - partnerAmounts: map ({ inTax?: number, tax8?: number, tax10?: number }) - required
+    //   - sharedAmounts: map ({ inTax?: number, tax8?: number, tax10?: number }) - required
+    //   - isSettled: bool - required, settlement status
+    //   - createdAt: number | timestamp - required, creation time (immutable)
+    //   - updatedAt: number | timestamp - optional, update time
+    //   - totalAmount: number - optional, cached sum
+    //
+    // Collection: activity_logs
+    // Document ID: auto-generated string
+    // Fields:
+    //   - type: string ("add"|"edit"|"settle"|"unsettle"|"settle_all"|"delete"|"import") - required
+    //   - userRole: string ("yuma" | "hanon") - required
+    //   - userName: string (1-100 chars) - required
+    //   - summary: string (1-1000 chars) - required
+    //   - meta: map - optional, operation metadata
+    //   - createdAt: number | timestamp - required
+    //   - serverCreatedAt: timestamp - optional
+    //
+    // Collection: fcmTokens
+    // Document ID: FCM token string (10-500 chars)
+    // Fields:
+    //   - token: string (must match document ID) - required
+    //   - userRole: string ("yuma" | "hanon") - required
+    //   - uid: string (1-128 chars, user UID or "anonymous" / "debug-hanon") - required
+    //   - device: string ("ios" | "other") - required
+    //   - isStandalone: bool - required
+    //   - updatedAt: timestamp | number - required
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isValidAmounts(amt) {
+      return amt is map
+        && amt.keys().hasOnly(['inTax', 'tax8', 'tax10'])
+        && (!('inTax' in amt) || (amt.inTax is number && amt.inTax >= 0 && amt.inTax <= 100000000))
+        && (!('tax8' in amt) || (amt.tax8 is number && amt.tax8 >= 0 && amt.tax8 <= 100000000))
+        && (!('tax10' in amt) || (amt.tax10 is number && amt.tax10 >= 0 && amt.tax10 <= 100000000));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidExpense(data) {
+      return data.keys().hasOnly(['date', 'store', 'payer', 'partnerAmounts', 'sharedAmounts', 'isSettled', 'createdAt', 'updatedAt', 'totalAmount'])
+        && data.keys().hasAll(['date', 'store', 'payer', 'partnerAmounts', 'sharedAmounts', 'isSettled', 'createdAt'])
+        && data.date is string && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.store is string && data.store.size() >= 1 && data.store.size() <= 200
+        && data.payer in ['yuma', 'hanon']
+        && data.isSettled is bool
+        && isValidAmounts(data.partnerAmounts)
+        && isValidAmounts(data.sharedAmounts)
+        && (data.createdAt is number && data.createdAt > 0 || data.createdAt is timestamp)
+        && (!('updatedAt' in data) || data.updatedAt is number || data.updatedAt is timestamp)
+        && (!('totalAmount' in data) || (data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 100000000));
+    }
+
+    function isValidActivityLog(data) {
+      return data.keys().hasOnly(['type', 'userRole', 'userName', 'summary', 'meta', 'createdAt', 'serverCreatedAt'])
+        && data.keys().hasAll(['type', 'userRole', 'userName', 'summary', 'createdAt'])
+        && data.type in ['add', 'edit', 'settle', 'unsettle', 'settle_all', 'delete', 'import']
+        && data.userRole in ['yuma', 'hanon']
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 100
+        && data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 1000
+        && (!('meta' in data) || data.meta is map)
+        && (data.createdAt is number && data.createdAt > 0 || data.createdAt is timestamp)
+        && (!('serverCreatedAt' in data) || data.serverCreatedAt is timestamp);
+    }
+
+    function isValidFcmToken(tokenId, data) {
+      return data.keys().hasOnly(['token', 'userRole', 'uid', 'device', 'isStandalone', 'updatedAt'])
+        && data.keys().hasAll(['token', 'userRole', 'uid', 'device', 'isStandalone', 'updatedAt'])
+        && data.token is string && data.token == tokenId && tokenId.size() >= 10 && tokenId.size() <= 500
+        && data.userRole in ['yuma', 'hanon']
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.device in ['ios', 'other']
+        && data.isStandalone is bool
+        && (data.updatedAt is timestamp || (data.updatedAt is number && data.updatedAt > 0));
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Expenses: Split calculation and purchase records
+    match /expenses/{expenseId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidExpense(request.resource.data);
+      allow update: if isAuthenticated()
+        && isValidExpense(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAuthenticated();
+    }
+
+    // Activity Logs: Append-only audit trail
+    match /activity_logs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidActivityLog(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // FCM Push Notification Tokens
+    // Writes are allowed for valid device token registrations (both authenticated and initial/anonymous registration flows)
+    // Reads and deletions from client are restricted to authenticated users (Cloud Functions Admin SDK bypasses rules)
+    match /fcmTokens/{tokenId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isValidFcmToken(tokenId, request.resource.data);
+      allow delete: if isAuthenticated();
+    }
+
+    // Default deny for all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
