@@ -2,12 +2,15 @@ import { useState, useEffect, useRef } from "react";
 import {
   Container, Paper, Title, Text, Button, Group, Stack,
   SegmentedControl, TextInput, ActionIcon, Badge, Checkbox,
-  Divider, Card, Center, Loader, Box, Alert
+  Divider, Card, Center, Loader, Box, Alert, UnstyledButton,
+  ThemeIcon
 } from "@mantine/core";
 import {
   IconPlus, IconTrash, IconCheck, IconLogout,
   IconBrandGoogle, IconDiscount2,
-  IconUpload, IconDownload
+  IconUpload, IconDownload, IconHistory,
+  IconReceipt, IconCirclePlus, IconDots,
+  IconFileSpreadsheet, IconUser, IconPencil
 } from "@tabler/icons-react";
 import {
   collection, addDoc, onSnapshot, query, orderBy,
@@ -19,7 +22,11 @@ import paperGrid from "./assets/paper-grid.webp";
 import futarigotoIcon from "./assets/futarigoto_icon_blue.svg";
 import futarigotoLogo from "./assets/futarigoto_logo_small.svg";
 import CsvImportModal from "./components/CsvImportModal";
+import ActivityLogModal from "./components/ActivityLogModal";
+import AddSuccessModal from "./components/AddSuccessModal";
+import EditExpenseModal from "./components/EditExpenseModal";
 import { exportExpensesToCsv } from "./utils/csvHelper";
+import { addActivityLog } from "./utils/logHelper";
 
 
 const newRow = () => ({
@@ -58,12 +65,27 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
 
   const [expenses, setExpenses] = useState([]);
-  const [showSettled, setShowSettled] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState("all");
+  const [activeTab, setActiveTab] = useState("history"); // "history" | "add" | "more"
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [logModalOpen, setLogModalOpen] = useState(false);
+  const [addSuccessModalOpen, setAddSuccessModalOpen] = useState(false);
+  const [editingExpense, setEditingExpense] = useState(null);
+  const [lastAddedExpense, setLastAddedExpense] = useState(null);
   const [feedbackMessage, setFeedbackMessage] = useState("");
+
+  const userRole = currentUser === "hanon" ? "hanon" : "yuma";
+  const userName = currentUser === "hanon" ? "はのん" : "ゆうま";
 
   const handleImportSuccess = (count) => {
     setFeedbackMessage(`${count}件の履歴をインポートしました！`);
+    addActivityLog(db, {
+      type: "import",
+      userRole,
+      userName,
+      summary: `CSVから ${count} 件の履歴をインポートしました`,
+      meta: { count },
+    });
     setTimeout(() => {
       setFeedbackMessage("");
     }, 4500);
@@ -239,6 +261,35 @@ export default function App() {
         isSettled: false,
         createdAt: Date.now(),
       });
+
+      const pTotal = Math.round((pAmt.inTax || 0) + (pAmt.tax8 || 0) * 1.08 + (pAmt.tax10 || 0) * 1.1);
+      const sTotal = Math.round((sAmt.inTax || 0) + (sAmt.tax8 || 0) * 1.08 + (sAmt.tax10 || 0) * 1.1);
+      const totalAmount = pTotal + sTotal;
+      const payerName = payer === "yuma" ? "ゆうま" : "はのん";
+
+      addActivityLog(db, {
+        type: "add",
+        userRole,
+        userName,
+        summary: `「${store.trim()}」（${date}）の支出を記録しました（${payerName}立替 / 合計 ¥${totalAmount.toLocaleString()}）`,
+        meta: {
+          store: store.trim(),
+          date,
+          payer,
+          totalAmount,
+          partnerTotal: pTotal,
+          sharedTotal: sTotal,
+        },
+      });
+
+      setLastAddedExpense({
+        store: store.trim(),
+        totalAmount,
+        date,
+        payer,
+      });
+      setAddSuccessModalOpen(true);
+
       setStore("");
       setPartnerItems([newRow()]);
       setSharedItems([newRow()]);
@@ -247,6 +298,16 @@ export default function App() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleContinueAdd = () => {
+    setAddSuccessModalOpen(false);
+  };
+
+  const handleViewAdded = () => {
+    setAddSuccessModalOpen(false);
+    setHistoryFilter("all");
+    setActiveTab("history");
   };
 
   // 5. 集計計算（Excelと完全一致）
@@ -276,12 +337,76 @@ export default function App() {
   );
   const diff = yumaClaim - hanonClaim;
 
-  // 6. 一括精算
+  // 6. 精算・操作系
+  const handleToggleSettled = async (ex) => {
+    const nextSettled = !ex.isSettled;
+    try {
+      await updateDoc(doc(db, "expenses", ex.id), { isSettled: nextSettled });
+      const p = Math.round((ex.partnerAmounts?.inTax || 0) + (ex.partnerAmounts?.tax8 || 0) * 1.08 + (ex.partnerAmounts?.tax10 || 0) * 1.1);
+      const s = Math.round((ex.sharedAmounts?.inTax || 0) + (ex.sharedAmounts?.tax8 || 0) * 1.08 + (ex.sharedAmounts?.tax10 || 0) * 1.1);
+
+      addActivityLog(db, {
+        type: nextSettled ? "settle" : "unsettle",
+        userRole,
+        userName,
+        summary: nextSettled
+          ? `「${ex.store}」（${ex.date}）を精算済にしました`
+          : `「${ex.store}」（${ex.date}）を未精算に戻しました`,
+        meta: {
+          store: ex.store,
+          date: ex.date,
+          payer: ex.payer,
+          totalAmount: p + s,
+        },
+      });
+    } catch (err) {
+      alert("更新エラー: " + err.message);
+    }
+  };
+
   const handleSettleAll = async () => {
-    if (!window.confirm(`未精算の ${unsettled.length} 件をすべて精算済にしますか？`)) return;
-    const batch = writeBatch(db);
-    unsettled.forEach((ex) => batch.update(doc(db, "expenses", ex.id), { isSettled: true }));
-    await batch.commit();
+    const count = unsettled.length;
+    if (count === 0) return;
+    if (!window.confirm(`未精算の ${count} 件をすべて精算済にしますか？`)) return;
+    try {
+      const batch = writeBatch(db);
+      unsettled.forEach((ex) => batch.update(doc(db, "expenses", ex.id), { isSettled: true }));
+      await batch.commit();
+
+      addActivityLog(db, {
+        type: "settle_all",
+        userRole,
+        userName,
+        summary: `未精算の支出 ${count} 件を一括精算済にしました`,
+        meta: { count },
+      });
+    } catch (err) {
+      alert("精算エラー: " + err.message);
+    }
+  };
+
+  const handleDeleteExpense = async (ex) => {
+    if (!window.confirm(`「${ex.store}」を削除しますか？`)) return;
+    try {
+      await deleteDoc(doc(db, "expenses", ex.id));
+      const p = Math.round((ex.partnerAmounts?.inTax || 0) + (ex.partnerAmounts?.tax8 || 0) * 1.08 + (ex.partnerAmounts?.tax10 || 0) * 1.1);
+      const s = Math.round((ex.sharedAmounts?.inTax || 0) + (ex.sharedAmounts?.tax8 || 0) * 1.08 + (ex.sharedAmounts?.tax10 || 0) * 1.1);
+
+      addActivityLog(db, {
+        type: "delete",
+        userRole,
+        userName,
+        summary: `「${ex.store}」（${ex.date}）の支出を削除しました`,
+        meta: {
+          store: ex.store,
+          date: ex.date,
+          payer: ex.payer,
+          totalAmount: p + s,
+        },
+      });
+    } catch (err) {
+      alert("削除エラー: " + err.message);
+    }
   };
 
   if (authLoading) return <Center h="100vh"><Loader size="lg" /></Center>;
@@ -411,7 +536,11 @@ export default function App() {
     );
   }
 
-  const displayed = showSettled ? expenses : unsettled;
+  const displayed = expenses.filter((ex) => {
+    if (historyFilter === "unsettled") return !ex.isSettled;
+    if (historyFilter === "settled") return ex.isSettled;
+    return true;
+  });
 
   const payerOptions =
     currentUser === "hanon"
@@ -428,315 +557,515 @@ export default function App() {
     <Container
       size="xs"
       style={{
-        paddingTop: "max(32px, calc(env(safe-area-inset-top, 0px) + 20px))",
-        paddingBottom: "max(80px, calc(env(safe-area-inset-bottom, 0px) + 80px))",
+        paddingTop: "max(24px, calc(env(safe-area-inset-top, 0px) + 12px))",
+        paddingBottom: "max(96px, calc(env(safe-area-inset-bottom, 0px) + 96px))",
       }}
     >
-      <Group justify="space-between" mb="md" wrap="nowrap">
+      {/* 共通ヘッダー */}
+      <Group justify="space-between" mb="sm" wrap="nowrap" align="center">
         <Group gap="xs" wrap="nowrap" align="center">
           <img
             src={futarigotoLogo}
             alt="Futarigoto"
             style={{
-              width: 40,
+              width: 36,
               objectFit: "contain",
               display: "block",
-              margin: "-16px -12px -16px -8px",
+              margin: "-12px -8px -12px -4px",
               filter: "invert(53%) sepia(51%) saturate(767%) hue-rotate(174deg) brightness(92%) contrast(87%)",
             }}
           />
-          <Title order={3} style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "2rem",margin: "9px" }}>Futarigoto</Title>
-          <Badge c="white" bg="blue" radius="xl" p="xs">beta</Badge>
+          <Title order={3} style={{ fontFamily: '"LTTurbo", sans-serif', fontSize: "1.8rem", margin: "4px" }}>
+            Futarigoto
+          </Title>
+          <Badge c="white" bg="blue" radius="xl" size="sm">beta</Badge>
         </Group>
         <Group gap="xs" wrap="nowrap">
-          <Button
-            variant="subtle"
-            color="gray"
-            size="xs"
-            p="xs"
-            leftSection={<IconLogout size={14} />}
-            onClick={() => {
-              setDebugUser(null);
-              signOut(auth);
+          <Badge
+            size="sm"
+            variant="light"
+            color={currentUser === "hanon" ? "pink" : "blue"}
+          >
+            {currentUser === "hanon" ? "はのん" : "ゆうま"}
+          </Badge>
+        </Group>
+      </Group>
+
+      {/* タブ1: 履歴 */}
+      {activeTab === "history" && (
+        <Box>
+          {/* 上部に固定する立替状況 */}
+          <Box
+            style={{
+              position: "sticky",
+              top: 0,
+              zIndex: 20,
+              backgroundColor: "var(--mantine-color-body, #fff)",
+              paddingTop: 4,
+              paddingBottom: 8,
+              marginBottom: 8,
             }}
           >
-            ログアウト
-          </Button>
-        </Group>
-      </Group>
+            <Paper withBorder shadow="sm" p="md" radius="lg" bg="blue.0">
+              <Group justify="space-between" mb={4}>
+                {currentUser === "hanon" ? (
+                  <>
+                    <Text size="xs" c="dimmed">はのん立替: ¥{hanonClaim.toLocaleString()}</Text>
+                    <Text size="xs" c="dimmed">ゆうま立替: ¥{yumaClaim.toLocaleString()}</Text>
+                  </>
+                ) : (
+                  <>
+                    <Text size="xs" c="dimmed">ゆうま立替: ¥{yumaClaim.toLocaleString()}</Text>
+                    <Text size="xs" c="dimmed">はのん立替: ¥{hanonClaim.toLocaleString()}</Text>
+                  </>
+                )}
+              </Group>
+              <Title order={3} ta="center" my="sm" c={diff === 0 ? "gray.7" : "blue.9"}>
+                {diff > 0 ? `はのん が ゆうま に ${diff.toLocaleString()}円支払う` : diff < 0 ? `ゆうま が はのん に ¥${Math.abs(diff).toLocaleString()}円支払う` : "精算なし（¥0）"}
+              </Title>
+              {unsettled.length > 0 && (
+                <Button fullWidth color="teal" leftSection={<IconCheck size={18} />} onClick={handleSettleAll} mt="xs">
+                  すべて精算済にする（{unsettled.length}件）
+                </Button>
+              )}
+            </Paper>
+          </Box>
 
-      <Paper withBorder shadow="sm" p="md" radius="lg" mb="lg" bg="blue.0">
-        <Group justify="space-between" mb={4}>
-          {currentUser === "hanon" ? (
-            <>
-              <Text size="xs" c="dimmed">はのん立替: ¥{hanonClaim.toLocaleString()}</Text>
-              <Text size="xs" c="dimmed">ゆうま立替: ¥{yumaClaim.toLocaleString()}</Text>
-            </>
-          ) : (
-            <>
-              <Text size="xs" c="dimmed">ゆうま立替: ¥{yumaClaim.toLocaleString()}</Text>
-              <Text size="xs" c="dimmed">はのん立替: ¥{hanonClaim.toLocaleString()}</Text>
-            </>
-          )}
-        </Group>
-        <Title order={3} ta="center" my="sm" c={diff === 0 ? "gray.7" : "blue.9"}>
-          {diff > 0 ? `はのん が ゆうま に ${diff.toLocaleString()}円支払う` : diff < 0 ? `ゆうま が はのん に ¥${Math.abs(diff).toLocaleString()}円支払う` : "精算なし（¥0）"}
-        </Title>
-        {unsettled.length > 0 && (
-          <Button fullWidth color="teal" leftSection={<IconCheck size={18} />} onClick={handleSettleAll} mt="xs">
-            すべて精算済にする（{unsettled.length}件）
-          </Button>
-        )}
-      </Paper>
-
-      <Paper withBorder shadow="xs" p="md" radius="lg" mb="xl">
-        <form onSubmit={handleSubmit}>
-          <Stack gap="sm">
+          <Group justify="space-between" mb="xs" align="center" wrap="wrap" gap="xs">
+            <Title order={4}>履歴（{displayed.length}件）</Title>
             <SegmentedControl
-              fullWidth size="md" value={payer} onChange={setPayer}
-              color={payer === "yuma" ? "blue" : "pink"}
-              data={payerOptions}
+              size="xs"
+              value={historyFilter}
+              onChange={setHistoryFilter}
+              data={[
+                { label: "すべて", value: "all" },
+                { label: "精算前", value: "unsettled" },
+                { label: "精算済", value: "settled" },
+              ]}
             />
-            <TextInput label="日付" type="date" value={date} onChange={(e) => setDate(e.currentTarget.value)} required />
-            <TextInput label="店舗｜購入品目" value={store} onChange={(e) => setStore(e.currentTarget.value)} required />
+          </Group>
 
-            <Divider my="xs" label={`【${payer === "yuma" ? "はのん" : "ゆうま"}の分】（100%請求）`} labelPosition="left" />
-            {partnerItems.map((item, idx) => (
-              <Stack key={item.id} gap={4}>
-                <Group gap="xs" wrap="nowrap">
-                  <TextInput
-                    ref={(el) => {
-                      amountInputRefs.current[item.id] = el;
-                    }}
-                    type="number"
-                    inputMode="numeric"
-                    enterKeyHint="next"
-                    placeholder={`金額 ${idx + 1}`}
-                    value={item.amount}
-                    onChange={(e) => updateRow(true, item.id, "amount", e.currentTarget.value)}
-                    onKeyDown={(e) => handleAmountKeyDown(e, true)}
-                    style={{ flex: 1 }}
-                  />
-                  <SegmentedControl
-                    size="xs"
-                    value={item.taxType}
-                    onChange={(val) => updateRow(true, item.id, "taxType", val)}
-                    data={[
-                      { label: "8%", value: "tax8" },
-                      { label: "10%", value: "tax10" },
-                      { label: "内税", value: "inTax" },
-                    ]}
-                  />
-                  <ActionIcon
-                    variant={item.hasDiscount ? "filled" : "light"}
-                    color={item.hasDiscount ? "orange" : "gray"}
-                    size="md"
-                    radius="md"
-                    onClick={() => toggleDiscount(true, item.id)}
-                    title="値引きあり"
-                  >
-                    <IconDiscount2 size={16} />
-                  </ActionIcon>
-                  {partnerItems.length > 1 && (
-                    <ActionIcon color="red" variant="subtle" size="md" onClick={() => removeRow(true, item.id)}>
-                      <IconTrash size={16} />
-                    </ActionIcon>
-                  )}
-                </Group>
-                {item.hasDiscount && (
-                  <Paper p="xs" radius="md" bg="orange.0" withBorder>
-                    <Group justify="space-between" wrap="nowrap" gap="xs">
-                      <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
-                        <SegmentedControl
-                          size="xs"
-                          value={item.discountType || "amount"}
-                          onChange={(val) => updateRow(true, item.id, "discountType", val)}
-                          data={[
-                            { label: "円引", value: "amount" },
-                            { label: "%引", value: "percent" },
-                          ]}
-                        />
-                        <TextInput
-                          size="xs"
-                          type="number"
-                          inputMode="numeric"
-                          enterKeyHint="next"
-                          placeholder={item.discountType === "percent" ? "割引率 (例: 20)" : "値引額 (例: 50)"}
-                          value={item.discountValue || ""}
-                          onChange={(e) => updateRow(true, item.id, "discountValue", e.currentTarget.value)}
-                          onKeyDown={(e) => handleAmountKeyDown(e, true)}
-                          style={{ flex: 1 }}
-                        />
+          {displayed.length === 0 ? (
+            <Paper p="xl" withBorder radius="lg" ta="center" bg="gray.0" my="md">
+              <Text size="sm" c="dimmed">
+                {historyFilter === "unsettled"
+                  ? "精算前の支出はありません"
+                  : historyFilter === "settled"
+                  ? "精算済の支出はありません"
+                  : "履歴はまだありません"}
+              </Text>
+            </Paper>
+          ) : (
+            <Stack gap="xs">
+              {displayed.map((ex) => {
+                const pTotal = Math.round((ex.partnerAmounts?.inTax || 0) + (ex.partnerAmounts?.tax8 || 0) * 1.08 + (ex.partnerAmounts?.tax10 || 0) * 1.1);
+                const sTotal = Math.round((ex.sharedAmounts?.inTax || 0) + (ex.sharedAmounts?.tax8 || 0) * 1.08 + (ex.sharedAmounts?.tax10 || 0) * 1.1);
+                return (
+                  <Card key={ex.id} withBorder radius="lg" p="sm" opacity={ex.isSettled ? 0.6 : 1}>
+                    <Group justify="space-between" wrap="nowrap">
+                      <Group gap="sm" wrap="nowrap" style={{ flex: 1 }}>
+                        <Checkbox checked={ex.isSettled} onChange={() => handleToggleSettled(ex)} />
+                        <div style={{ flex: 1 }}>
+                          <Group gap="xs" mb={2}>
+                            <Badge size="xs" color={ex.payer === "yuma" ? "blue" : "pink"}>{ex.payer === "yuma" ? "ゆうま払" : "はのん払"}</Badge>
+                            <Text size="xs" c="dimmed">{ex.date}</Text>
+                            {ex.isSettled && <Badge size="xs" color="gray" variant="outline">精算済</Badge>}
+                          </Group>
+                          <Text size="sm" fw={600}>{ex.store}</Text>
+                          <Group gap="md" mt={4}>
+                            {pTotal > 0 && <Text size="xs" c="dimmed">相手分: ¥{pTotal.toLocaleString()}</Text>}
+                            {sTotal > 0 && <Text size="xs" c="dimmed">共有: ¥{sTotal.toLocaleString()} (半額 ¥{Math.round(sTotal / 2).toLocaleString()})</Text>}
+                          </Group>
+                        </div>
                       </Group>
-                      {item.amount && item.discountValue ? (
-                        <Badge color="orange" variant="light" size="sm">
-                          ¥{getEffectiveAmount(item).toLocaleString()}
-                        </Badge>
-                      ) : null}
-                    </Group>
-                  </Paper>
-                )}
-              </Stack>
-            ))}
-            <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => addRow(true)}>
-              追加
-            </Button>
-
-            <Divider my="xs" label="【共有物品】（50%折半）" labelPosition="left" />
-            {sharedItems.map((item, idx) => (
-              <Stack key={item.id} gap={4}>
-                <Group gap="xs" wrap="nowrap">
-                  <TextInput
-                    ref={(el) => {
-                      amountInputRefs.current[item.id] = el;
-                    }}
-                    type="number"
-                    inputMode="numeric"
-                    enterKeyHint="next"
-                    placeholder={`金額 ${idx + 1}`}
-                    value={item.amount}
-                    onChange={(e) => updateRow(false, item.id, "amount", e.currentTarget.value)}
-                    onKeyDown={(e) => handleAmountKeyDown(e, false)}
-                    style={{ flex: 1 }}
-                  />
-                  <SegmentedControl
-                    size="xs"
-                    value={item.taxType}
-                    onChange={(val) => updateRow(false, item.id, "taxType", val)}
-                    data={[
-                      { label: "8%", value: "tax8" },
-                      { label: "10%", value: "tax10" },
-                      { label: "内税", value: "inTax" },
-                    ]}
-                  />
-                  <ActionIcon
-                    variant={item.hasDiscount ? "filled" : "light"}
-                    color={item.hasDiscount ? "orange" : "gray"}
-                    size="md"
-                    radius="md"
-                    onClick={() => toggleDiscount(false, item.id)}
-                    title="値引きあり"
-                  >
-                    <IconDiscount2 size={16} />
-                  </ActionIcon>
-                  {sharedItems.length > 1 && (
-                    <ActionIcon color="red" variant="subtle" size="md" onClick={() => removeRow(false, item.id)}>
-                      <IconTrash size={16} />
-                    </ActionIcon>
-                  )}
-                </Group>
-                {item.hasDiscount && (
-                  <Paper p="xs" radius="md" bg="orange.0" withBorder>
-                    <Group justify="space-between" wrap="nowrap" gap="xs">
-                      <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
-                        <SegmentedControl
-                          size="xs"
-                          value={item.discountType || "amount"}
-                          onChange={(val) => updateRow(false, item.id, "discountType", val)}
-                          data={[
-                            { label: "円引", value: "amount" },
-                            { label: "%引", value: "percent" },
-                          ]}
-                        />
-                        <TextInput
-                          size="xs"
-                          type="number"
-                          inputMode="numeric"
-                          enterKeyHint="next"
-                          placeholder={item.discountType === "percent" ? "割引率 (例: 20)" : "値引額 (例: 50)"}
-                          value={item.discountValue || ""}
-                          onChange={(e) => updateRow(false, item.id, "discountValue", e.currentTarget.value)}
-                          onKeyDown={(e) => handleAmountKeyDown(e, false)}
-                          style={{ flex: 1 }}
-                        />
+                      <Group gap={4} wrap="nowrap">
+                        <ActionIcon color="blue" variant="subtle" onClick={() => setEditingExpense(ex)} title="編集">
+                          <IconPencil size={16} />
+                        </ActionIcon>
+                        <ActionIcon color="gray" variant="subtle" onClick={() => handleDeleteExpense(ex)} title="削除">
+                          <IconTrash size={16} />
+                        </ActionIcon>
                       </Group>
-                      {item.amount && item.discountValue ? (
-                        <Badge color="orange" variant="light" size="sm">
-                          ¥{getEffectiveAmount(item).toLocaleString()}
-                        </Badge>
-                      ) : null}
                     </Group>
-                  </Paper>
-                )}
-              </Stack>
-            ))}
-            <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => addRow(false)}>
-              追加
-            </Button>
-
-            <Button type="submit" size="md" fullWidth mt="sm" loading={submitting}>記録する</Button>
-          </Stack>
-        </form>
-      </Paper>
-
-      {feedbackMessage && (
-        <Alert
-          color="teal"
-          icon={<IconCheck size={16} />}
-          radius="md"
-          mb="md"
-          withCloseButton
-          onClose={() => setFeedbackMessage("")}
-        >
-          {feedbackMessage}
-        </Alert>
+                  </Card>
+                );
+              })}
+            </Stack>
+          )}
+        </Box>
       )}
 
-      <Group justify="space-between" mb="xs" align="center">
-        <Title order={4}>履歴（{displayed.length}件）</Title>
-        <Checkbox label="精算済も表示" checked={showSettled} onChange={(e) => setShowSettled(e.currentTarget.checked)} size="xs" />
-      </Group>
+      {/* タブ2: 追加 */}
+      {activeTab === "add" && (
+        <Box>
+          <Paper withBorder shadow="xs" p="md" radius="lg">
+            <form onSubmit={handleSubmit}>
+              <Stack gap="sm">
+                <SegmentedControl
+                  fullWidth size="md" value={payer} onChange={setPayer}
+                  color={payer === "yuma" ? "blue" : "pink"}
+                  data={payerOptions}
+                />
+                <TextInput label="日付" type="date" value={date} onChange={(e) => setDate(e.currentTarget.value)} required />
+                <TextInput label="メモ（店舗・購入品目など）" value={store} onChange={(e) => setStore(e.currentTarget.value)} required />
 
-      <Group justify="flex-start" mb="sm" gap="xs">
-        <Button
-          variant="light"
-          size="xs"
-          leftSection={<IconUpload size={14} />}
-          onClick={() => setImportModalOpen(true)}
-        >
-          CSVインポート
-        </Button>
-        <Button
-          variant="default"
-          size="xs"
-          leftSection={<IconDownload size={14} />}
-          onClick={() => exportExpensesToCsv(expenses)}
-          disabled={expenses.length === 0}
-        >
-          CSVエクスポート
-        </Button>
-      </Group>
+                <Divider my="xs" label={`【${payer === "yuma" ? "はのん" : "ゆうま"}の分】（100%請求）`} labelPosition="left" />
+                {partnerItems.map((item, idx) => (
+                  <Stack key={item.id} gap={4}>
+                    <Group gap="xs" wrap="nowrap">
+                      <TextInput
+                        ref={(el) => {
+                          amountInputRefs.current[item.id] = el;
+                        }}
+                        type="number"
+                        inputMode="numeric"
+                        enterKeyHint="next"
+                        placeholder={`金額 ${idx + 1}`}
+                        value={item.amount}
+                        onChange={(e) => updateRow(true, item.id, "amount", e.currentTarget.value)}
+                        onKeyDown={(e) => handleAmountKeyDown(e, true)}
+                        style={{ flex: 1 }}
+                      />
+                      <SegmentedControl
+                        size="xs"
+                        value={item.taxType}
+                        onChange={(val) => updateRow(true, item.id, "taxType", val)}
+                        data={[
+                          { label: "8%", value: "tax8" },
+                          { label: "10%", value: "tax10" },
+                          { label: "内税", value: "inTax" },
+                        ]}
+                      />
+                      <ActionIcon
+                        variant={item.hasDiscount ? "filled" : "light"}
+                        color={item.hasDiscount ? "orange" : "gray"}
+                        size="md"
+                        radius="md"
+                        onClick={() => toggleDiscount(true, item.id)}
+                        title="値引きあり"
+                      >
+                        <IconDiscount2 size={16} />
+                      </ActionIcon>
+                      {partnerItems.length > 1 && (
+                        <ActionIcon color="red" variant="subtle" size="md" onClick={() => removeRow(true, item.id)}>
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      )}
+                    </Group>
+                    {item.hasDiscount && (
+                      <Paper p="xs" radius="md" bg="orange.0" withBorder>
+                        <Group justify="space-between" wrap="nowrap" gap="xs">
+                          <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
+                            <SegmentedControl
+                              size="xs"
+                              value={item.discountType || "amount"}
+                              onChange={(val) => updateRow(true, item.id, "discountType", val)}
+                              data={[
+                                { label: "円引", value: "amount" },
+                                { label: "%引", value: "percent" },
+                              ]}
+                            />
+                            <TextInput
+                              size="xs"
+                              type="number"
+                              inputMode="numeric"
+                              enterKeyHint="next"
+                              placeholder={item.discountType === "percent" ? "割引率 (例: 20)" : "値引額 (例: 50)"}
+                              value={item.discountValue || ""}
+                              onChange={(e) => updateRow(true, item.id, "discountValue", e.currentTarget.value)}
+                              onKeyDown={(e) => handleAmountKeyDown(e, true)}
+                              style={{ flex: 1 }}
+                            />
+                          </Group>
+                          {item.amount && item.discountValue ? (
+                            <Badge color="orange" variant="light" size="sm">
+                              ¥{getEffectiveAmount(item).toLocaleString()}
+                            </Badge>
+                          ) : null}
+                        </Group>
+                      </Paper>
+                    )}
+                  </Stack>
+                ))}
+                <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => addRow(true)}>
+                  追加
+                </Button>
 
-      <Stack gap="xs">
-        {displayed.map((ex) => {
-          const pTotal = Math.round((ex.partnerAmounts?.inTax || 0) + (ex.partnerAmounts?.tax8 || 0) * 1.08 + (ex.partnerAmounts?.tax10 || 0) * 1.1);
-          const sTotal = Math.round((ex.sharedAmounts?.inTax || 0) + (ex.sharedAmounts?.tax8 || 0) * 1.08 + (ex.sharedAmounts?.tax10 || 0) * 1.1);
-          return (
-            <Card key={ex.id} withBorder radius="lg" p="sm" opacity={ex.isSettled ? 0.6 : 1}>
-              <Group justify="space-between" wrap="nowrap">
-                <Group gap="sm" wrap="nowrap" style={{ flex: 1 }}>
-                  <Checkbox checked={ex.isSettled} onChange={() => updateDoc(doc(db, "expenses", ex.id), { isSettled: !ex.isSettled })} />
-                  <div style={{ flex: 1 }}>
-                    <Group gap="xs" mb={2}>
-                      <Badge size="xs" color={ex.payer === "yuma" ? "blue" : "pink"}>{ex.payer === "yuma" ? "ゆうま払" : "はのん払"}</Badge>
-                      <Text size="xs" c="dimmed">{ex.date}</Text>
-                      {ex.isSettled && <Badge size="xs" color="gray" variant="outline">精算済</Badge>}
+                <Divider my="xs" label="【共有物品】（50%折半）" labelPosition="left" />
+                {sharedItems.map((item, idx) => (
+                  <Stack key={item.id} gap={4}>
+                    <Group gap="xs" wrap="nowrap">
+                      <TextInput
+                        ref={(el) => {
+                          amountInputRefs.current[item.id] = el;
+                        }}
+                        type="number"
+                        inputMode="numeric"
+                        enterKeyHint="next"
+                        placeholder={`金額 ${idx + 1}`}
+                        value={item.amount}
+                        onChange={(e) => updateRow(false, item.id, "amount", e.currentTarget.value)}
+                        onKeyDown={(e) => handleAmountKeyDown(e, false)}
+                        style={{ flex: 1 }}
+                      />
+                      <SegmentedControl
+                        size="xs"
+                        value={item.taxType}
+                        onChange={(val) => updateRow(false, item.id, "taxType", val)}
+                        data={[
+                          { label: "8%", value: "tax8" },
+                          { label: "10%", value: "tax10" },
+                          { label: "内税", value: "inTax" },
+                        ]}
+                      />
+                      <ActionIcon
+                        variant={item.hasDiscount ? "filled" : "light"}
+                        color={item.hasDiscount ? "orange" : "gray"}
+                        size="md"
+                        radius="md"
+                        onClick={() => toggleDiscount(false, item.id)}
+                        title="値引きあり"
+                      >
+                        <IconDiscount2 size={16} />
+                      </ActionIcon>
+                      {sharedItems.length > 1 && (
+                        <ActionIcon color="red" variant="subtle" size="md" onClick={() => removeRow(false, item.id)}>
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      )}
                     </Group>
-                    <Text size="sm" fw={600}>{ex.store}</Text>
-                    <Group gap="md" mt={4}>
-                      {pTotal > 0 && <Text size="xs" c="dimmed">相手分: ¥{pTotal.toLocaleString()}</Text>}
-                      {sTotal > 0 && <Text size="xs" c="dimmed">共有: ¥{sTotal.toLocaleString()} (半額 ¥{Math.round(sTotal / 2).toLocaleString()})</Text>}
-                    </Group>
-                  </div>
-                </Group>
-                <ActionIcon color="gray" variant="subtle" onClick={() => window.confirm(`「${ex.store}」を削除しますか？`) && deleteDoc(doc(db, "expenses", ex.id))}>
-                  <IconTrash size={16} />
-                </ActionIcon>
-              </Group>
-            </Card>
-          );
-        })}
-      </Stack>
+                    {item.hasDiscount && (
+                      <Paper p="xs" radius="md" bg="orange.0" withBorder>
+                        <Group justify="space-between" wrap="nowrap" gap="xs">
+                          <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
+                            <SegmentedControl
+                              size="xs"
+                              value={item.discountType || "amount"}
+                              onChange={(val) => updateRow(false, item.id, "discountType", val)}
+                              data={[
+                                { label: "円引", value: "amount" },
+                                { label: "%引", value: "percent" },
+                              ]}
+                            />
+                            <TextInput
+                              size="xs"
+                              type="number"
+                              inputMode="numeric"
+                              enterKeyHint="next"
+                              placeholder={item.discountType === "percent" ? "割引率 (例: 20)" : "値引額 (例: 50)"}
+                              value={item.discountValue || ""}
+                              onChange={(e) => updateRow(false, item.id, "discountValue", e.currentTarget.value)}
+                              onKeyDown={(e) => handleAmountKeyDown(e, false)}
+                              style={{ flex: 1 }}
+                            />
+                          </Group>
+                          {item.amount && item.discountValue ? (
+                            <Badge color="orange" variant="light" size="sm">
+                              ¥{getEffectiveAmount(item).toLocaleString()}
+                            </Badge>
+                          ) : null}
+                        </Group>
+                      </Paper>
+                    )}
+                  </Stack>
+                ))}
+                <Button variant="light" size="xs" leftSection={<IconPlus size={14} />} onClick={() => addRow(false)}>
+                  追加
+                </Button>
+
+                <Button type="submit" size="md" fullWidth mt="sm" loading={submitting}>記録する</Button>
+              </Stack>
+            </form>
+          </Paper>
+        </Box>
+      )}
+
+      {/* タブ3: その他 */}
+      {activeTab === "more" && (
+        <Stack gap="md">
+          {feedbackMessage && (
+            <Alert
+              color="teal"
+              icon={<IconCheck size={16} />}
+              radius="md"
+              withCloseButton
+              onClose={() => setFeedbackMessage("")}
+            >
+              {feedbackMessage}
+            </Alert>
+          )}
+
+          {/* 操作ログ */}
+          <Card withBorder radius="lg" p="md">
+            <Group gap="sm" mb="xs">
+              <ThemeIcon color="blue" size="lg" radius="md" variant="light">
+                <IconHistory size={20} />
+              </ThemeIcon>
+              <div>
+                <Text fw={600} size="sm">操作ログ</Text>
+                <Text size="xs" c="dimmed">支出の追加・精算・削除の履歴を確認できます</Text>
+              </div>
+            </Group>
+            <Button
+              variant="light"
+              color="blue"
+              fullWidth
+              mt="xs"
+              leftSection={<IconHistory size={16} />}
+              onClick={() => setLogModalOpen(true)}
+            >
+              操作ログを見る
+            </Button>
+          </Card>
+
+          {/* CSVデータ管理 */}
+          <Card withBorder radius="lg" p="md">
+            <Group gap="sm" mb="xs">
+              <ThemeIcon color="teal" size="lg" radius="md" variant="light">
+                <IconFileSpreadsheet size={20} />
+              </ThemeIcon>
+              <div>
+                <Text fw={600} size="sm">CSVデータ連携</Text>
+                <Text size="xs" c="dimmed">履歴の一括取り込みやバックアップ出力</Text>
+              </div>
+            </Group>
+            <Group grow mt="xs">
+              <Button
+                variant="light"
+                leftSection={<IconUpload size={16} />}
+                onClick={() => setImportModalOpen(true)}
+              >
+                CSVインポート
+              </Button>
+              <Button
+                variant="default"
+                leftSection={<IconDownload size={16} />}
+                onClick={() => exportExpensesToCsv(expenses)}
+                disabled={expenses.length === 0}
+              >
+                CSVエクスポート
+              </Button>
+            </Group>
+          </Card>
+
+          {/* アカウント情報 */}
+          <Card withBorder radius="lg" p="md">
+            <Group gap="sm" mb="xs">
+              <ThemeIcon color="gray" size="lg" radius="md" variant="light">
+                <IconUser size={20} />
+              </ThemeIcon>
+              <div>
+                <Text fw={600} size="sm">アカウント情報</Text>
+                <Text size="xs" c="dimmed">{activeUser?.email || "ログイン中"}</Text>
+              </div>
+            </Group>
+            <Group justify="space-between" mt="xs" align="center">
+              <Badge size="md" color={currentUser === "hanon" ? "pink" : "blue"}>
+                {currentUser === "hanon" ? "はのん" : "ゆうま"} としてログイン中
+              </Badge>
+              <Button
+                variant="subtle"
+                color="red"
+                size="xs"
+                leftSection={<IconLogout size={14} />}
+                onClick={() => {
+                  setDebugUser(null);
+                  signOut(auth);
+                }}
+              >
+                ログアウト
+              </Button>
+            </Group>
+          </Card>
+        </Stack>
+      )}
+
+      {/* 画面下のナビゲーションバー */}
+      <Box
+        style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          backgroundColor: "rgba(255, 255, 255, 0.95)",
+          backdropFilter: "blur(12px)",
+          borderTop: "1px solid #e9ecef",
+          zIndex: 100,
+          boxShadow: "0 -2px 10px rgba(0, 0, 0, 0.05)",
+          paddingBottom: "max(12px, env(safe-area-inset-bottom, 0px))",
+          paddingTop: "8px",
+        }}
+      >
+        <Container size="xs">
+          <Group justify="space-around" grow gap={0}>
+            <UnstyledButton
+              onClick={() => setActiveTab("history")}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "4px 0",
+                color: activeTab === "history" ? "#228be6" : "#868e96",
+                cursor: "pointer",
+                transition: "color 0.15s ease",
+              }}
+            >
+              <IconReceipt size={24} stroke={activeTab === "history" ? 2.3 : 1.8} />
+              <Text size="xs" fw={activeTab === "history" ? 700 : 500} mt={2}>
+                履歴
+              </Text>
+            </UnstyledButton>
+
+            <UnstyledButton
+              onClick={() => setActiveTab("add")}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "4px 0",
+                color: activeTab === "add" ? "#228be6" : "#868e96",
+                cursor: "pointer",
+                transition: "color 0.15s ease",
+              }}
+            >
+              <IconCirclePlus size={24} stroke={activeTab === "add" ? 2.3 : 1.8} />
+              <Text size="xs" fw={activeTab === "add" ? 700 : 500} mt={2}>
+                追加
+              </Text>
+            </UnstyledButton>
+
+            <UnstyledButton
+              onClick={() => setActiveTab("more")}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "4px 0",
+                color: activeTab === "more" ? "#228be6" : "#868e96",
+                cursor: "pointer",
+                transition: "color 0.15s ease",
+              }}
+            >
+              <IconDots size={24} stroke={activeTab === "more" ? 2.3 : 1.8} />
+              <Text size="xs" fw={activeTab === "more" ? 700 : 500} mt={2}>
+                その他
+              </Text>
+            </UnstyledButton>
+          </Group>
+        </Container>
+      </Box>
+
+      {/* モーダル群 */}
+      <AddSuccessModal
+        opened={addSuccessModalOpen}
+        onClose={() => setAddSuccessModalOpen(false)}
+        onContinue={handleContinueAdd}
+        onView={handleViewAdded}
+        lastExpense={lastAddedExpense}
+      />
 
       <CsvImportModal
         opened={importModalOpen}
@@ -744,6 +1073,20 @@ export default function App() {
         currentUser={currentUser}
         db={db}
         onImportSuccess={handleImportSuccess}
+      />
+
+      <ActivityLogModal
+        opened={logModalOpen}
+        onClose={() => setLogModalOpen(false)}
+        db={db}
+      />
+
+      <EditExpenseModal
+        opened={Boolean(editingExpense)}
+        onClose={() => setEditingExpense(null)}
+        expense={editingExpense}
+        currentUser={currentUser}
+        db={db}
       />
     </Container>
   );
