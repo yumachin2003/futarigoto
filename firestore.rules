@@ -18,6 +18,9 @@ service cloud.firestore {
     //   - createdAt: number | timestamp - required, creation time (immutable)
     //   - updatedAt: number | timestamp - optional, update time
     //   - totalAmount: number - optional, cached sum
+    //   - createdByRole: string ("yuma" | "hanon") - optional, author role
+    //   - createdByName: string (1-100 chars) - optional, author name
+    //   - createdByPhoto: string | null (0-1000 chars) - optional, author photo URL
     //
     // Collection: activity_logs
     // Document ID: auto-generated string
@@ -63,7 +66,7 @@ service cloud.firestore {
     // ===============================================================
 
     function isValidExpense(data) {
-      return data.keys().hasOnly(['date', 'store', 'payer', 'partnerAmounts', 'sharedAmounts', 'isSettled', 'createdAt', 'updatedAt', 'totalAmount'])
+      return data.keys().hasOnly(['date', 'store', 'payer', 'partnerAmounts', 'sharedAmounts', 'isSettled', 'createdAt', 'updatedAt', 'totalAmount', 'createdByRole', 'createdByName', 'createdByPhoto'])
         && data.keys().hasAll(['date', 'store', 'payer', 'partnerAmounts', 'sharedAmounts', 'isSettled', 'createdAt'])
         && data.date is string && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && data.store is string && data.store.size() >= 1 && data.store.size() <= 200
@@ -73,7 +76,10 @@ service cloud.firestore {
         && isValidAmounts(data.sharedAmounts)
         && (data.createdAt is number && data.createdAt > 0 || data.createdAt is timestamp)
         && (!('updatedAt' in data) || data.updatedAt is number || data.updatedAt is timestamp)
-        && (!('totalAmount' in data) || (data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 100000000));
+        && (!('totalAmount' in data) || (data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 100000000))
+        && (!('createdByRole' in data) || data.createdByRole in ['yuma', 'hanon'])
+        && (!('createdByName' in data) || (data.createdByName is string && data.createdByName.size() <= 100))
+        && (!('createdByPhoto' in data) || data.createdByPhoto == null || (data.createdByPhoto is string && data.createdByPhoto.size() <= 1000));
     }
 
     function isValidActivityLog(data) {

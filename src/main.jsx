@@ -1,9 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { MantineProvider, createTheme } from "@mantine/core";
+import { MantineProvider, createTheme, ColorSchemeScript } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "./fonts.css";
 import App from "./App.jsx";
+import AddToHomeScreenPrompt from "./components/AddToHomeScreenPrompt.jsx";
 
 // Custom blue palette based on #4A8BDB (index 6 is the primary shade)
 const customBlue = [
@@ -36,7 +37,9 @@ const theme = createTheme({
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <MantineProvider theme={theme}>
+    <ColorSchemeScript defaultColorScheme="auto" />
+    <MantineProvider theme={theme} defaultColorScheme="auto">
+      <AddToHomeScreenPrompt />
       <App />
     </MantineProvider>
   </React.StrictMode>

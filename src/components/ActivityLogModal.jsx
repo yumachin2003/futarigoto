@@ -157,7 +157,7 @@ export default function ActivityLogModal({ opened, onClose, db }) {
             <Loader size="sm" />
           </Center>
         ) : filteredLogs.length === 0 ? (
-          <Paper p="xl" withBorder radius="md" ta="center" bg="gray.0" my="md">
+          <Paper p="xl" withBorder radius="md" ta="center" bg="var(--mantine-color-default-hover)" my="md">
             <Text size="sm" c="dimmed">
               操作ログはまだありません
             </Text>

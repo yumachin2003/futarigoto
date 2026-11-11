@@ -3,7 +3,7 @@ import {
   Container, Paper, Title, Text, Button, Group, Stack,
   SegmentedControl, TextInput, ActionIcon, Badge, Checkbox,
   Divider, Card, Center, Loader, Box, Alert, UnstyledButton,
-  ThemeIcon, Avatar
+  ThemeIcon, Avatar, Switch, useMantineColorScheme, useComputedColorScheme
 } from "@mantine/core";
 import {
   IconPlus, IconTrash, IconCheck, IconLogout,
@@ -11,7 +11,10 @@ import {
   IconUpload, IconDownload, IconHistory,
   IconReceipt, IconCirclePlus, IconDots,
   IconFileSpreadsheet, IconUser, IconPencil,
-  IconBell, IconBellRinging
+  IconBell, IconBellRinging, IconRotate2,
+  IconSun, IconMoon, IconDeviceDesktop,
+  IconMoonFilled,
+  IconSunFilled
 } from "@tabler/icons-react";
 import {
   collection, addDoc, onSnapshot, query, orderBy,
@@ -47,6 +50,8 @@ const newRow = () => ({
 const isDebugHanon = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "hanon";
 
 export default function App() {
+  const { colorScheme, setColorScheme } = useMantineColorScheme({ keepTransitions: true });
+  const computedColorScheme = useComputedColorScheme("light");
   const [user, setUser] = useState(null);
   const [debugUser, setDebugUser] = useState(() =>
     isDebugHanon ? { uid: "debug-hanon", displayName: "はのん", email: "muranakahanon@gmail.com" } : null
@@ -79,6 +84,7 @@ export default function App() {
   const [editingExpense, setEditingExpense] = useState(null);
   const [lastAddedExpense, setLastAddedExpense] = useState(null);
   const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
 
   const userRole = currentUser === "hanon" ? "hanon" : "yuma";
   const userName = currentUser === "hanon" ? "はのん" : "ゆうま";
@@ -113,7 +119,7 @@ export default function App() {
     setupForegroundMessageListener((payload) => {
       const title = payload.notification?.title || payload.data?.title || "ふたりごと";
       const body = payload.notification?.body || payload.data?.body || "";
-      setFeedbackMessage(`🔔 ${title}: ${body}`);
+      setFeedbackMessage(`🔔 ${title}\n${body}`);
       setTimeout(() => setFeedbackMessage(""), 5000);
     });
   }, []);
@@ -297,19 +303,23 @@ export default function App() {
 
     setSubmitting(true);
     try {
+      const pTotal = Math.round((pAmt.inTax || 0) + (pAmt.tax8 || 0) * 1.08 + (pAmt.tax10 || 0) * 1.1);
+      const sTotal = Math.round((sAmt.inTax || 0) + (sAmt.tax8 || 0) * 1.08 + (sAmt.tax10 || 0) * 1.1);
+      const totalAmount = pTotal + sTotal;
+
       await addDoc(collection(db, "expenses"), {
         date,
         store: store.trim(),
         payer,
         partnerAmounts: pAmt,
         sharedAmounts: sAmt,
+        totalAmount,
         isSettled: false,
         createdAt: Date.now(),
+        createdByRole: userRole,
+        createdByName: userName,
+        createdByPhoto: activeUser?.photoURL || null,
       });
-
-      const pTotal = Math.round((pAmt.inTax || 0) + (pAmt.tax8 || 0) * 1.08 + (pAmt.tax10 || 0) * 1.1);
-      const sTotal = Math.round((sAmt.inTax || 0) + (sAmt.tax8 || 0) * 1.08 + (sAmt.tax10 || 0) * 1.1);
-      const totalAmount = pTotal + sTotal;
       const payerName = payer === "yuma" ? "ゆうま" : "はのん";
 
       addActivityLog(db, {
@@ -382,6 +392,42 @@ export default function App() {
   );
   const diff = yumaClaim - hanonClaim;
 
+  // 選択中の未精算項目と集計
+  const selectedExpenses = unsettled.filter((ex) => selectedIds.includes(ex.id));
+  const selectedSum = {
+    yuma: { pIn: 0, p8: 0, p10: 0, sIn: 0, s8: 0, s10: 0 },
+    hanon: { pIn: 0, p8: 0, p10: 0, sIn: 0, s8: 0, s10: 0 },
+  };
+  selectedExpenses.forEach((ex) => {
+    const t = ex.payer === "yuma" ? selectedSum.yuma : selectedSum.hanon;
+    t.pIn += ex.partnerAmounts?.inTax || 0;
+    t.p8 += ex.partnerAmounts?.tax8 || 0;
+    t.p10 += ex.partnerAmounts?.tax10 || 0;
+    t.sIn += ex.sharedAmounts?.inTax || 0;
+    t.s8 += ex.sharedAmounts?.tax8 || 0;
+    t.s10 += ex.sharedAmounts?.tax10 || 0;
+  });
+  const selectedYumaClaim = Math.round(
+    selectedSum.yuma.pIn + selectedSum.yuma.p8 * 1.08 + selectedSum.yuma.p10 * 1.1 +
+    (selectedSum.yuma.sIn + selectedSum.yuma.s8 * 1.08 + selectedSum.yuma.s10 * 1.1) / 2
+  );
+  const selectedHanonClaim = Math.round(
+    selectedSum.hanon.pIn + selectedSum.hanon.p8 * 1.08 + selectedSum.hanon.p10 * 1.1 +
+    (selectedSum.hanon.sIn + selectedSum.hanon.s8 * 1.08 + selectedSum.hanon.s10 * 1.1) / 2
+  );
+  const selectedDiff = selectedYumaClaim - selectedHanonClaim;
+
+  // 選択トグル
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = () => {
+    setSelectedIds(unsettled.map((ex) => ex.id));
+  };
+
   // 6. 精算・操作系
   const handleToggleSettled = async (ex) => {
     const nextSettled = !ex.isSettled;
@@ -389,6 +435,8 @@ export default function App() {
       await updateDoc(doc(db, "expenses", ex.id), { isSettled: nextSettled });
       const p = Math.round((ex.partnerAmounts?.inTax || 0) + (ex.partnerAmounts?.tax8 || 0) * 1.08 + (ex.partnerAmounts?.tax10 || 0) * 1.1);
       const s = Math.round((ex.sharedAmounts?.inTax || 0) + (ex.sharedAmounts?.tax8 || 0) * 1.08 + (ex.sharedAmounts?.tax10 || 0) * 1.1);
+
+      setSelectedIds((prev) => prev.filter((id) => id !== ex.id));
 
       addActivityLog(db, {
         type: nextSettled ? "settle" : "unsettle",
@@ -409,6 +457,41 @@ export default function App() {
     }
   };
 
+  // 選択した項目で清算
+  const handleSettleSelected = async () => {
+    const count = selectedExpenses.length;
+    if (count === 0) return;
+
+    let confirmMsg = `選択した ${count} 件を清算済にしますか？`;
+    if (selectedDiff !== 0) {
+      const payerName = selectedDiff > 0 ? "はのん" : "ゆうま";
+      const receiverName = selectedDiff > 0 ? "ゆうま" : "はのん";
+      confirmMsg += `\n（${payerName} が ${receiverName} に ¥${Math.abs(selectedDiff).toLocaleString()} 支払い）`;
+    }
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const batch = writeBatch(db);
+      selectedExpenses.forEach((ex) => batch.update(doc(db, "expenses", ex.id), { isSettled: true }));
+      await batch.commit();
+
+      addActivityLog(db, {
+        type: "settle",
+        userRole,
+        userName,
+        summary: `選択した支出 ${count} 件を清算済にしました`,
+        meta: { count, selectedDiff },
+      });
+
+      setSelectedIds([]);
+      setFeedbackMessage(`${count}件の支出を清算済にしました！`);
+      setTimeout(() => setFeedbackMessage(""), 4000);
+    } catch (err) {
+      alert("清算エラー: " + err.message);
+    }
+  };
+
   const handleSettleAll = async () => {
     const count = unsettled.length;
     if (count === 0) return;
@@ -425,6 +508,8 @@ export default function App() {
         summary: `未精算の支出 ${count} 件を一括精算済にしました`,
         meta: { count },
       });
+
+      setSelectedIds([]);
     } catch (err) {
       alert("精算エラー: " + err.message);
     }
@@ -434,6 +519,7 @@ export default function App() {
     if (!window.confirm(`「${ex.store}」を削除しますか？`)) return;
     try {
       await deleteDoc(doc(db, "expenses", ex.id));
+      setSelectedIds((prev) => prev.filter((id) => id !== ex.id));
       const p = Math.round((ex.partnerAmounts?.inTax || 0) + (ex.partnerAmounts?.tax8 || 0) * 1.08 + (ex.partnerAmounts?.tax10 || 0) * 1.1);
       const s = Math.round((ex.sharedAmounts?.inTax || 0) + (ex.sharedAmounts?.tax8 || 0) * 1.08 + (ex.sharedAmounts?.tax10 || 0) * 1.1);
 
@@ -612,7 +698,7 @@ export default function App() {
           position: "sticky",
           top: 0,
           zIndex: 30,
-          backgroundColor: "var(--mantine-color-body, #fff)",
+          backgroundColor: "var(--mantine-color-body)",
           paddingTop: "max(12px, calc(env(safe-area-inset-top, 0px) + 8px))",
           paddingBottom: "8px",
           margin: "0 -16px 8px -16px",
@@ -638,7 +724,22 @@ export default function App() {
             </Title>
             <Badge c="white" bg="blue" radius="xl" size="sm">beta</Badge>
           </Group>
-          <Group gap="xs" wrap="nowrap">
+          <Group gap="sm" wrap="nowrap" align="center">
+            <Switch
+              checked={computedColorScheme === "dark"}
+              onChange={() => setColorScheme(computedColorScheme === "dark" ? "light" : "dark")}
+              size="md"
+              onLabel={<IconMoonFilled size={14} color="#fde047" />}
+              offLabel={<IconSunFilled size={14} color="#ffffff" />}
+              aria-label="Toggle dark mode"
+              styles={{
+                track: {
+                  cursor: "pointer",
+                  backgroundColor: computedColorScheme === "dark" ? "#1e3a5f" : "#fcc419",
+                  borderColor: computedColorScheme === "dark" ? "#3b82f6" : "#fab005",
+                },
+              }}
+            />
             <Avatar
               src={activeUser?.photoURL}
               size="sm"
@@ -658,13 +759,13 @@ export default function App() {
               position: "sticky",
               top: 0,
               zIndex: 20,
-              backgroundColor: "var(--mantine-color-body, #fff)",
+              backgroundColor: "var(--mantine-color-body)",
               paddingTop: 4,
               paddingBottom: 8,
               marginBottom: 8,
             }}
           >
-            <Paper withBorder shadow="sm" p="md" radius="lg" bg="blue.0">
+            <Paper withBorder shadow="sm" p="md" radius="lg" bg="var(--mantine-color-blue-light)">
               <Group justify="space-between" mb={4}>
                 {currentUser === "hanon" ? (
                   <>
@@ -678,14 +779,67 @@ export default function App() {
                   </>
                 )}
               </Group>
-              <Title order={3} ta="center" my="sm" c={diff === 0 ? "gray.7" : "blue.9"}>
+              <Title order={3} ta="center" my="sm" c={diff === 0 ? "dimmed" : "blue.5"}>
                 {diff > 0 ? `はのん が ゆうま に ${diff.toLocaleString()}円支払う` : diff < 0 ? `ゆうま が はのん に ¥${Math.abs(diff).toLocaleString()}円支払う` : "精算なし（¥0）"}
               </Title>
-              {unsettled.length > 0 && (
-                <Button fullWidth color="teal" leftSection={<IconCheck size={18} />} onClick={handleSettleAll} mt="xs">
-                  すべて精算済にする（{unsettled.length}件）
-                </Button>
-              )}
+
+              {/* 選択項目がある場合の精算ボタン */}
+              {selectedExpenses.length > 0 ? (
+                <Stack gap="xs" mt="xs">
+                  <Paper p="xs" radius="md" withBorder bg="var(--mantine-color-body)">
+                    <Group justify="space-between">
+                      <Text size="xs" c="dimmed">選択中: {selectedExpenses.length}件</Text>
+                      <Text size="xs" fw={700} c="teal.6">
+                        {selectedDiff > 0
+                          ? `はのん ➔ ゆうま: ¥${selectedDiff.toLocaleString()}`
+                          : selectedDiff < 0
+                          ? `ゆうま ➔ はのん: ¥${Math.abs(selectedDiff).toLocaleString()}`
+                          : "精算差額なし（¥0）"}
+                      </Text>
+                    </Group>
+                  </Paper>
+                  <Group gap="xs">
+                    <Button
+                      style={{ flex: 1 }}
+                      color="teal"
+                      size="md"
+                      leftSection={<IconCheck size={18} />}
+                      onClick={handleSettleSelected}
+                    >
+                      選択した項目で清算（{selectedExpenses.length}件）
+                    </Button>
+                    <Button
+                      variant="light"
+                      color="gray"
+                      size="md"
+                      onClick={() => setSelectedIds([])}
+                    >
+                      解除
+                    </Button>
+                  </Group>
+                </Stack>
+              ) : unsettled.length > 0 ? (
+                <Group gap="xs" mt="xs">
+                  <Button
+                    style={{ flex: 1 }}
+                    variant="light"
+                    color="blue"
+                    size="xs"
+                    onClick={handleSelectAll}
+                  >
+                    未精算を全選択（{unsettled.length}件）
+                  </Button>
+                  <Button
+                    style={{ flex: 1 }}
+                    color="teal"
+                    size="xs"
+                    leftSection={<IconCheck size={16} />}
+                    onClick={handleSettleAll}
+                  >
+                    すべて精算済にする
+                  </Button>
+                </Group>
+              ) : null}
             </Paper>
           </Box>
 
@@ -704,7 +858,7 @@ export default function App() {
           </Group>
 
           {displayed.length === 0 ? (
-            <Paper p="xl" withBorder radius="lg" ta="center" bg="gray.0" my="md">
+            <Paper p="xl" withBorder radius="lg" ta="center" bg="var(--mantine-color-default-hover)" my="md">
               <Text size="sm" c="dimmed">
                 {historyFilter === "unsettled"
                   ? "精算前の支出はありません"
@@ -718,16 +872,73 @@ export default function App() {
               {displayed.map((ex) => {
                 const pTotal = Math.round((ex.partnerAmounts?.inTax || 0) + (ex.partnerAmounts?.tax8 || 0) * 1.08 + (ex.partnerAmounts?.tax10 || 0) * 1.1);
                 const sTotal = Math.round((ex.sharedAmounts?.inTax || 0) + (ex.sharedAmounts?.tax8 || 0) * 1.08 + (ex.sharedAmounts?.tax10 || 0) * 1.1);
+                const isSelected = selectedIds.includes(ex.id);
+
                 return (
-                  <Card key={ex.id} withBorder radius="lg" p="sm" opacity={ex.isSettled ? 0.6 : 1}>
+                  <Card
+                    key={ex.id}
+                    withBorder
+                    radius="lg"
+                    p="sm"
+                    opacity={ex.isSettled ? 0.6 : 1}
+                    style={{
+                      borderColor: isSelected ? "var(--mantine-color-teal-filled)" : undefined,
+                      backgroundColor: isSelected ? "var(--mantine-color-teal-light)" : undefined,
+                      transition: "all 0.15s ease",
+                    }}
+                  >
                     <Group justify="space-between" wrap="nowrap">
-                      <Group gap="sm" wrap="nowrap" style={{ flex: 1 }}>
-                        <Checkbox checked={ex.isSettled} onChange={() => handleToggleSettled(ex)} />
+                      <Group
+                        gap="sm"
+                        wrap="nowrap"
+                        style={{ flex: 1, cursor: !ex.isSettled ? "pointer" : "default" }}
+                        onClick={() => {
+                          if (!ex.isSettled) {
+                            toggleSelect(ex.id);
+                          }
+                        }}
+                      >
+                        {!ex.isSettled ? (
+                          <Checkbox
+                            checked={isSelected}
+                            onChange={() => toggleSelect(ex.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            color="teal"
+                            size="sm"
+                          />
+                        ) : (
+                          <ActionIcon
+                            color="gray"
+                            variant="subtle"
+                            size="sm"
+                            title="未精算に戻す"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleSettled(ex);
+                            }}
+                          >
+                            <IconRotate2 size={16} />
+                          </ActionIcon>
+                        )}
                         <div style={{ flex: 1 }}>
                           <Group gap="xs" mb={2}>
                             <Badge size="xs" color={ex.payer === "yuma" ? "blue" : "pink"}>{ex.payer === "yuma" ? "ゆうま払" : "はのん払"}</Badge>
                             <Text size="xs" c="dimmed">{ex.date}</Text>
-                            {ex.isSettled && <Badge size="xs" color="gray" variant="outline">精算済</Badge>}
+                            {ex.isSettled && (
+                              <Badge
+                                size="xs"
+                                color="gray"
+                                variant="outline"
+                                style={{ cursor: "pointer" }}
+                                title="クリックで未精算に戻す"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleSettled(ex);
+                                }}
+                              >
+                                精算済
+                              </Badge>
+                            )}
                           </Group>
                           <Text size="sm" fw={600}>{ex.store}</Text>
                           <Group gap="md" mt={4}>
@@ -737,10 +948,26 @@ export default function App() {
                         </div>
                       </Group>
                       <Group gap={4} wrap="nowrap">
-                        <ActionIcon color="blue" variant="subtle" onClick={() => setEditingExpense(ex)} title="編集">
+                        <ActionIcon
+                          color="blue"
+                          variant="subtle"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingExpense(ex);
+                          }}
+                          title="編集"
+                        >
                           <IconPencil size={16} />
                         </ActionIcon>
-                        <ActionIcon color="gray" variant="subtle" onClick={() => handleDeleteExpense(ex)} title="削除">
+                        <ActionIcon
+                          color="gray"
+                          variant="subtle"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteExpense(ex);
+                          }}
+                          title="削除"
+                        >
                           <IconTrash size={16} />
                         </ActionIcon>
                       </Group>
@@ -811,7 +1038,7 @@ export default function App() {
                       )}
                     </Group>
                     {item.hasDiscount && (
-                      <Paper p="xs" radius="md" bg="orange.0" withBorder>
+                      <Paper p="xs" radius="md" bg="var(--mantine-color-orange-light)" withBorder>
                         <Group justify="space-between" wrap="nowrap" gap="xs">
                           <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
                             <SegmentedControl
@@ -893,7 +1120,7 @@ export default function App() {
                       )}
                     </Group>
                     {item.hasDiscount && (
-                      <Paper p="xs" radius="md" bg="orange.0" withBorder>
+                      <Paper p="xs" radius="md" bg="var(--mantine-color-orange-light)" withBorder>
                         <Group justify="space-between" wrap="nowrap" gap="xs">
                           <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
                             <SegmentedControl
@@ -949,7 +1176,9 @@ export default function App() {
               withCloseButton
               onClose={() => setFeedbackMessage("")}
             >
-              {feedbackMessage}
+              <Text size="sm" style={{ whiteSpace: "pre-line" }}>
+                {feedbackMessage}
+              </Text>
             </Alert>
           )}
 
@@ -1051,6 +1280,66 @@ export default function App() {
             )}
           </Card>
 
+          {/* 外観（カラーテーマ）設定 */}
+          <Card withBorder radius="lg" p="md">
+            <Group gap="sm" mb="xs">
+              <ThemeIcon
+                color="violet"
+                size="lg"
+                radius="md"
+                variant="light"
+              >
+                {colorScheme === "dark" ? (
+                  <IconMoon size={20} />
+                ) : colorScheme === "light" ? (
+                  <IconSun size={20} />
+                ) : (
+                  <IconDeviceDesktop size={20} />
+                )}
+              </ThemeIcon>
+              <div style={{ flex: 1 }}>
+                <Text fw={600} size="sm">カラーテーマ</Text>
+                <Text size="xs" c="dimmed">ライト・ダーク・OS連動を切り替えられます</Text>
+              </div>
+            </Group>
+            <SegmentedControl
+              fullWidth
+              size="xs"
+              mt="xs"
+              value={colorScheme}
+              onChange={(value) => setColorScheme(value)}
+              data={[
+                {
+                  value: "light",
+                  label: (
+                    <Center style={{ gap: 6 }}>
+                      <IconSun size={15} />
+                      <span>ライト</span>
+                    </Center>
+                  ),
+                },
+                {
+                  value: "dark",
+                  label: (
+                    <Center style={{ gap: 6 }}>
+                      <IconMoon size={15} />
+                      <span>ダーク</span>
+                    </Center>
+                  ),
+                },
+                {
+                  value: "auto",
+                  label: (
+                    <Center style={{ gap: 6 }}>
+                      <IconDeviceDesktop size={15} />
+                      <span>自動</span>
+                    </Center>
+                  ),
+                },
+              ]}
+            />
+          </Card>
+
           {/* アカウント情報 */}
           <Card withBorder radius="lg" p="md">
             <Group gap="sm" mb="xs">
@@ -1097,9 +1386,9 @@ export default function App() {
           bottom: 0,
           left: 0,
           right: 0,
-          backgroundColor: "rgba(255, 255, 255, 0.95)",
+          backgroundColor: "var(--mantine-color-body)",
           backdropFilter: "blur(12px)",
-          borderTop: "1px solid #e9ecef",
+          borderTop: "1px solid var(--mantine-color-default-border)",
           zIndex: 100,
           boxShadow: "0 -2px 10px rgba(0, 0, 0, 0.05)",
           paddingBottom: "max(12px, env(safe-area-inset-bottom, 0px))",
@@ -1116,7 +1405,7 @@ export default function App() {
                 alignItems: "center",
                 justifyContent: "center",
                 padding: "4px 0",
-                color: activeTab === "history" ? "#228be6" : "#868e96",
+                color: activeTab === "history" ? "var(--mantine-color-blue-filled)" : "var(--mantine-color-dimmed)",
                 cursor: "pointer",
                 transition: "color 0.15s ease",
               }}
@@ -1135,7 +1424,7 @@ export default function App() {
                 alignItems: "center",
                 justifyContent: "center",
                 padding: "4px 0",
-                color: activeTab === "add" ? "#228be6" : "#868e96",
+                color: activeTab === "add" ? "var(--mantine-color-blue-filled)" : "var(--mantine-color-dimmed)",
                 cursor: "pointer",
                 transition: "color 0.15s ease",
               }}
@@ -1154,7 +1443,7 @@ export default function App() {
                 alignItems: "center",
                 justifyContent: "center",
                 padding: "4px 0",
-                color: activeTab === "more" ? "#228be6" : "#868e96",
+                color: activeTab === "more" ? "var(--mantine-color-blue-filled)" : "var(--mantine-color-dimmed)",
                 cursor: "pointer",
                 transition: "color 0.15s ease",
               }}

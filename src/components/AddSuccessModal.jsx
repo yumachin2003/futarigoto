@@ -28,13 +28,13 @@ export default function AddSuccessModal({
             清算を追加しました！
           </Text>
           {lastExpense?.store && (
-            <Paper p="xs" px="md" radius="md" bg="gray.0" withBorder mt="xs" style={{ width: "100%" }}>
+            <Paper p="xs" px="md" radius="md" bg="var(--mantine-color-default-hover)" withBorder mt="xs" style={{ width: "100%" }}>
               <Group justify="space-between">
                 <Text size="sm" fw={600}>
                   {lastExpense.store}
                 </Text>
                 {typeof lastExpense.totalAmount === "number" && (
-                  <Text size="sm" fw={700} c="blue.7">
+                  <Text size="sm" fw={700} c="blue.5">
                     ¥{lastExpense.totalAmount.toLocaleString()}
                   </Text>
                 )}

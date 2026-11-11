@@ -259,7 +259,7 @@ export default function EditExpenseModal({
                 )}
               </Group>
               {item.hasDiscount && (
-                <Paper p="xs" radius="md" bg="orange.0" withBorder>
+                <Paper p="xs" radius="md" bg="var(--mantine-color-orange-light)" withBorder>
                   <Group justify="space-between" wrap="nowrap" gap="xs">
                     <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
                       <SegmentedControl
@@ -344,7 +344,7 @@ export default function EditExpenseModal({
                 )}
               </Group>
               {item.hasDiscount && (
-                <Paper p="xs" radius="md" bg="orange.0" withBorder>
+                <Paper p="xs" radius="md" bg="var(--mantine-color-orange-light)" withBorder>
                   <Group justify="space-between" wrap="nowrap" gap="xs">
                     <Group gap="xs" wrap="nowrap" style={{ flex: 1 }}>
                       <SegmentedControl

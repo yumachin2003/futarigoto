@@ -145,12 +145,12 @@ export default function CsvImportModal({
               onDragLeave={handleDragLeave}
               onClick={() => fileInputRef.current?.click()}
               style={{
-                border: `2px dashed ${dragOver ? "#4A8BDB" : "#ced4da"}`,
+                border: `2px dashed ${dragOver ? "var(--mantine-color-blue-filled)" : "var(--mantine-color-default-border)"}`,
                 borderRadius: "14px",
                 padding: "32px 16px",
                 textAlign: "center",
                 cursor: "pointer",
-                backgroundColor: dragOver ? "rgba(74, 139, 219, 0.08)" : "#f8f9fa",
+                backgroundColor: dragOver ? "var(--mantine-color-blue-light)" : "var(--mantine-color-default-hover)",
                 transition: "all 0.2s ease",
               }}
             >
@@ -201,7 +201,7 @@ export default function CsvImportModal({
             </Group>
 
             <Collapse in={showGuide}>
-              <Paper p="sm" radius="md" bg="gray.0" withBorder>
+              <Paper p="sm" radius="md" bg="var(--mantine-color-default-hover)" withBorder>
                 <Text size="xs" fw={700} mb="xs">
                   CSVヘッダー対応仕様
                 </Text>
@@ -236,7 +236,7 @@ export default function CsvImportModal({
         {/* Parsed Preview & Import Settings */}
         {file && parsedData && (
           <Stack gap="sm">
-            <Paper p="xs" radius="md" withBorder bg="blue.0">
+            <Paper p="xs" radius="md" withBorder bg="var(--mantine-color-blue-light)">
               <Group justify="space-between" wrap="nowrap">
                 <Group gap="xs" wrap="nowrap" style={{ overflow: "hidden" }}>
                   <IconFileCheck size={20} color="#4A8BDB" />
@@ -337,7 +337,7 @@ export default function CsvImportModal({
                       <Table.Tr
                         key={item.rowIndex}
                         style={{
-                          backgroundColor: !item.isValid ? "rgba(255, 107, 107, 0.1)" : undefined,
+                          backgroundColor: !item.isValid ? "var(--mantine-color-red-light)" : undefined,
                         }}
                       >
                         <Table.Td>{item.rowIndex}</Table.Td>

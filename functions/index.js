@@ -22,17 +22,23 @@ async function getTokensForRole(targetRole) {
     }
   });
 
-  return tokens;
+  // 重複トークンを排除
+  return [...new Set(tokens)];
 }
 
 /**
  * 宛先トークン一覧へ通知を一斉送信し、無効なトークンがあればクリーンアップ
  */
-async function sendPushNotification(tokens, { title, body, data = {} }) {
+async function sendPushNotification(tokens, { title, body, icon, badge, tag, data = {} }) {
   if (!tokens || tokens.length === 0) {
     console.log("送信先トークンがありません。スキップします。");
     return;
   }
+
+  const uniqueTokens = [...new Set(tokens)];
+  const resolvedIcon = icon || "/apple-touch-icon.png";
+  const resolvedBadge = badge || "/apple-touch-icon.png";
+  const resolvedTag = tag || "futarigoto-notification";
 
   const message = {
     notification: {
@@ -41,18 +47,29 @@ async function sendPushNotification(tokens, { title, body, data = {} }) {
     },
     data: {
       ...data,
+      title,
+      body,
+      senderPhotoURL: resolvedIcon,
+      tag: resolvedTag,
       click_action: "/",
     },
     webpush: {
+      headers: {
+        Urgency: "high",
+      },
       notification: {
-        icon: "/apple-touch-icon.png",
-        badge: "/apple-touch-icon.png",
+        title,
+        body,
+        icon: resolvedIcon,
+        badge: resolvedBadge,
+        tag: resolvedTag,
+        renotify: true,
       },
       fcmOptions: {
         link: "/",
       },
     },
-    tokens,
+    tokens: uniqueTokens,
   };
 
   const response = await admin.messaging().sendEachForMulticast(message);
@@ -68,7 +85,7 @@ async function sendPushNotification(tokens, { title, body, data = {} }) {
           errCode === "messaging/invalid-registration-token" ||
           errCode === "messaging/registration-token-not-registered"
         ) {
-          const badToken = tokens[idx];
+          const badToken = uniqueTokens[idx];
           cleanupPromises.push(
             admin.firestore().collection("fcmTokens").doc(badToken).delete()
           );
@@ -94,21 +111,46 @@ exports.onExpenseCreated = onDocumentCreated(
     if (!snapshot) return;
 
     const data = snapshot.data();
-    const payer = data.payer; // "yuma" | "hanon"
-    const store = data.store ? `（${data.store}）` : "";
-    const totalAmount = data.totalAmount || 0;
 
-    // 通知の送信先は「支払った本人ではない相手」
-    const targetRole = payer === "hanon" ? "yuma" : "hanon";
-    const senderName = payer === "hanon" ? "はのん" : "ゆうま";
+    // ログイン中のアカウント（記録者）で判定
+    const createdByRole = data.createdByRole || (data.payer === "hanon" ? "hanon" : "yuma");
+    const targetRole = createdByRole === "hanon" ? "yuma" : "hanon";
+    const senderName = createdByRole === "hanon" ? "はのん" : "ゆうま";
+    const senderPhotoURL = data.createdByPhoto || null;
 
-    const title = `${senderName}が精算を追加しました`;
-    const body = `${store} ¥${Number(totalAmount).toLocaleString()} の精算が追加されました。`;
+    // 金額の算出
+    let totalAmount = data.totalAmount;
+    if (typeof totalAmount !== "number") {
+      const pAmt = data.partnerAmounts || {};
+      const sAmt = data.sharedAmounts || {};
+      const pTotal = Math.round((pAmt.inTax || 0) + (pAmt.tax8 || 0) * 1.08 + (pAmt.tax10 || 0) * 1.1);
+      const sTotal = Math.round((sAmt.inTax || 0) + (sAmt.tax8 || 0) * 1.08 + (sAmt.tax10 || 0) * 1.1);
+      totalAmount = pTotal + sTotal;
+    }
+
+    // 指定の通知書式:
+    // **<ユーザー名>が清算を追加しました**
+    // 金額
+    // メモ
+    // 日付
+    const title = `${senderName}が清算を追加しました`;
+
+    const amountFormatted = `¥${Number(totalAmount).toLocaleString()}`;
+    const storeText = data.store ? String(data.store).trim() : "";
+    const dateText = data.date ? String(data.date).trim() : "";
+
+    const bodyLines = [amountFormatted];
+    if (storeText) bodyLines.push(storeText);
+    if (dateText) bodyLines.push(dateText);
+    const body = bodyLines.join("\n");
 
     const tokens = await getTokensForRole(targetRole);
     await sendPushNotification(tokens, {
       title,
       body,
+      icon: senderPhotoURL || "/apple-touch-icon.png",
+      badge: "/apple-touch-icon.png",
+      tag: `expense-${event.params.expenseId}`,
       data: {
         type: "expense_created",
         expenseId: event.params.expenseId,
@@ -132,8 +174,6 @@ exports.onExpenseUpdated = onDocumentUpdated(
     // isSettled が false から true に変化した時のみ通知
     if (!beforeData.isSettled && afterData.isSettled) {
       const payer = afterData.payer;
-      // 精算完了時は、精算対象の両者に通知、または支払った人宛てに通知
-      // 一般的には「立て替えてくれた人」に「精算完了したよ」と伝えるのが自然
       const targetRole = payer; 
       const targetName = targetRole === "hanon" ? "はのん" : "ゆうま";
       const totalAmount = afterData.totalAmount || 0;
@@ -141,11 +181,13 @@ exports.onExpenseUpdated = onDocumentUpdated(
       const title = `精算が完了しました！`;
       const body = `¥${Number(totalAmount).toLocaleString()} の精算が「精算済み」になりました。`;
 
-      // 相手側にも双方にも届くよう、targetRole宛てに送信
       const tokens = await getTokensForRole(targetRole);
       await sendPushNotification(tokens, {
         title,
         body,
+        icon: "/apple-touch-icon.png",
+        badge: "/apple-touch-icon.png",
+        tag: `expense-settled-${event.params.expenseId}`,
         data: {
           type: "expense_settled",
           expenseId: event.params.expenseId,
@@ -154,4 +196,3 @@ exports.onExpenseUpdated = onDocumentUpdated(
     }
   }
 );
-
